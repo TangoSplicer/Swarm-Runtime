@@ -1,0 +1,13 @@
+[package]
+name = "judge"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# The WebAssembly Runtime
+wasmtime = "14.0"
+anyhow = "1.0"
+
+[lib]
+name = "judge"
+path = "src/lib.rs"

@@ -1,0 +1,16 @@
+[package]
+name = "swarm-node"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+prism = { path = "../prism" }
+synapse = { path = "../synapse" }
+judge = { path = "../judge" }
+lazarus = { path = "../lazarus" }
+
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.10"
+async-trait = "0.1" 

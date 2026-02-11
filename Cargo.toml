@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "components/prism",
+    "components/synapse",
+    "components/judge",
+    "components/lazarus",
+    "components/swarm-node"
+]
+resolver = "2"

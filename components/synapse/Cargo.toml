@@ -1,0 +1,15 @@
+[package]
+name = "synapse"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# The core networking stack
+libp2p = { version = "0.53", features = ["tcp", "tls", "dns", "yamux", "noise", "gossipsub", "ping", "macros", "tokio"] }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+anyhow = "1.0"
+
+[lib]
+name = "synapse"
+path = "src/lib.rs"
