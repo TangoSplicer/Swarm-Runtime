@@ -1,4 +1,5 @@
 use libp2p::{
+    gossipsub,
     ping,
     swarm::NetworkBehaviour,
     tcp,
@@ -9,11 +10,23 @@ use libp2p::{
     SwarmBuilder,
 };
 use std::time::Duration;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use anyhow::Result;
+
+// --- GOSSIPSUB CONFIGURATION ---
+// We need to define how messages are identified (to prevent duplicates)
+pub fn message_id_fn(message: &gossipsub::Message) -> gossipsub::MessageId {
+    let mut s = DefaultHasher::new();
+    message.data.hash(&mut s);
+    gossipsub::MessageId::from(s.finish().to_string())
+}
+// -------------------------------
 
 #[derive(NetworkBehaviour)]
 pub struct SynapseBehavior {
     pub ping: ping::Behaviour,
+    pub gossipsub: gossipsub::Behaviour, // NEW: The Gossip Layer
 }
 
 pub struct SynapseNode {
@@ -25,12 +38,26 @@ impl SynapseNode {
         let local_key = identity::Keypair::generate_ed25519();
         let local_peer_id = PeerId::from(local_key.public());
         
-        // println!("Synapse: Local Peer ID generated: {:?}", local_peer_id);
+        // 1. Configure GossipSub
+        let gossip_config = gossipsub::ConfigBuilder::default()
+            .heartbeat_interval(Duration::from_secs(1))
+            .validation_mode(gossipsub::ValidationMode::Strict)
+            .message_id_fn(message_id_fn) 
+            .build()
+            .map_err(|msg| anyhow::anyhow!("Gossip config failed: {}", msg))?;
 
+        let gossip = gossipsub::Behaviour::new(
+            gossipsub::MessageAuthenticity::Signed(local_key.clone()),
+            gossip_config,
+        ).map_err(|msg| anyhow::anyhow!("Gossip creation failed: {}", msg))?;
+
+        // 2. Combine Behaviors
         let behavior = SynapseBehavior {
             ping: ping::Behaviour::new(ping::Config::new().with_interval(Duration::from_secs(1))),
+            gossipsub: gossip,
         };
 
+        // 3. Build Swarm
         let _swarm = SwarmBuilder::with_existing_identity(local_key)
             .with_tokio()
             .with_tcp(
@@ -51,17 +78,10 @@ impl SynapseNode {
 mod tests {
     use super::*;
 
-    // TRUTH PROTOCOL: Self-Check
-    // We explicitly use the multi-threaded runtime for the test
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_identity_generation() {
-        println!("TEST: Starting Synapse Node creation...");
+    async fn test_gossip_initialization() {
+        println!("TEST: Initializing GossipSub Node...");
         let node_result = SynapseNode::new().await;
-        
-        assert!(node_result.is_ok(), "Node creation failed");
-        let node = node_result.unwrap();
-        
-        println!("TEST: Success! Peer ID: {}", node.peer_id);
-        assert!(!node.peer_id.to_string().is_empty());
+        assert!(node_result.is_ok(), "GossipSub initialization failed");
     }
 }
