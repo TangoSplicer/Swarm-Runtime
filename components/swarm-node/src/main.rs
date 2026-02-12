@@ -132,7 +132,7 @@ async fn main() -> Result<()> {
             p2p_node.drive_for(Duration::from_secs(1)).await;
         }
         Commands::Start { shard } => {
-            println!("=== Swarm Runtime v0.3.0 ===");
+            println!("=== Swarm Runtime v0.4.0 ===");
             println!("System: Boot sequence initiated...");
 
             let _judge = Judge::new()?;
