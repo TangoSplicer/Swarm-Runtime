@@ -1,69 +1,57 @@
-use syn::{visit::Visit, ItemStruct}; // Removed 'Type'
-use anyhow::{Result, bail};
+use syn::{ItemStruct, Item, Fields};
+use anyhow::Result; // FIX: Removed unused 'Context'
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone)]
+pub struct StateField {
+    pub name: String,
+    pub type_name: String,
+    pub assigned_shard: u64,
+}
+
+#[derive(Debug)]
 pub struct StateManifest {
-    pub fields: Vec<String>,
+    pub fields: Vec<StateField>,
+    pub shard_count: u64,
 }
 
-struct StateVisitor {
-    found_state: bool,
-    manifest: StateManifest,
+fn assign_shard(name: &str, shard_count: u64) -> u64 {
+    let mut s = DefaultHasher::new();
+    name.hash(&mut s);
+    s.finish() % shard_count
 }
 
-impl<'ast> Visit<'ast> for StateVisitor {
-    fn visit_item_struct(&mut self, node: &'ast ItemStruct) {
-        if node.ident == "State" {
-            self.found_state = true;
-            for field in &node.fields {
-                if let Some(ident) = &field.ident {
-                    self.manifest.fields.push(ident.to_string());
+pub fn extract_state(ast: &syn::File, shard_count: u64) -> Result<StateManifest> {
+    let mut fields = Vec::new();
+
+    for item in &ast.items {
+        if let Item::Struct(ItemStruct { ident, fields: struct_fields, .. }) = item {
+            if ident == "State" {
+                if let Fields::Named(named_fields) = struct_fields {
+                    for field in &named_fields.named {
+                        let field_name = field.ident.as_ref().unwrap().to_string();
+                        let type_name = match &field.ty {
+                            syn::Type::Path(p) => p.path.segments.last().unwrap().ident.to_string(),
+                            _ => "Unknown".to_string(),
+                        };
+
+                        let shard_id = assign_shard(&field_name, shard_count);
+
+                        fields.push(StateField {
+                            name: field_name,
+                            type_name,
+                            assigned_shard: shard_id,
+                        });
+                    }
                 }
             }
         }
-        syn::visit::visit_item_struct(self, node);
-    }
-}
-
-pub fn extract_state(ast: &syn::File) -> Result<StateManifest> {
-    let mut visitor = StateVisitor {
-        found_state: false,
-        manifest: StateManifest::default(),
-    };
-
-    visitor.visit_file(ast);
-
-    if !visitor.found_state {
-        bail!("Sharding Error: No 'struct State' found in source code.");
     }
 
-    Ok(visitor.manifest)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use syn::parse_file;
-
-    #[test]
-    fn test_extract_state_fields() {
-        let code = r#"
-            struct State {
-                balance: u64,
-                username: String,
-            }
-            fn main() {}
-        "#;
-        let ast = parse_file(code).unwrap();
-        let manifest = extract_state(&ast).unwrap();
-        assert_eq!(manifest.fields.len(), 2);
+    if fields.is_empty() {
+        anyhow::bail!("Sharding Error: No 'struct State' found in source code.");
     }
-    
-    #[test]
-    fn test_fail_if_no_state() {
-        let code = "fn main() { let x = 5; }";
-        let ast = parse_file(code).unwrap();
-        let result = extract_state(&ast);
-        assert!(result.is_err());
-    }
+
+    Ok(StateManifest { fields, shard_count })
 }

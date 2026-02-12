@@ -151,3 +151,14 @@ impl SynapseNode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_gossip_initialization() {
+        let node_result = SynapseNode::new().await;
+        assert!(node_result.is_ok(), "GossipSub initialization failed");
+    }
+}
