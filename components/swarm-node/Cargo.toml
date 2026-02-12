@@ -1,17 +1,22 @@
 [package]
 name = "swarm-node"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 
 [dependencies]
+clap = { version = "4.0", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+env_logger = "0.10"
+log = "0.4"
+sled = "0.34"
+async-trait = "0.1"
+futures = "0.3" 
+# FIX: Removed "swarm" feature, added "macros" and "tokio" to match synapse
+libp2p = { version = "0.53", features = ["gossipsub", "macros", "tokio"] }
+
+# Internal Components
 prism = { path = "../prism" }
 synapse = { path = "../synapse" }
 judge = { path = "../judge" }
 lazarus = { path = "../lazarus" }
-
-tokio = { version = "1", features = ["full"] }
-anyhow = "1.0"
-log = "0.4"
-env_logger = "0.10"
-async-trait = "0.1"
-clap = { version = "4.4", features = ["derive"] } # NEW: CLI Parser

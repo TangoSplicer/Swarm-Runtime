@@ -84,17 +84,18 @@ impl SynapseNode {
         })
     }
 
+    pub fn subscribe(&mut self, topic_name: &str) -> Result<()> {
+        let topic = gossipsub::IdentTopic::new(topic_name);
+        self.swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
+        println!("Synapse: Subscribed to channel '{}'", topic_name);
+        Ok(())
+    }
+
     pub async fn wait_for_event(&mut self) {
         loop {
             match self.swarm.select_next_some().await {
                 SwarmEvent::NewListenAddr { address, .. } => {
                      println!("Synapse: Listening on {:?}", address);
-                }
-                SwarmEvent::Behaviour(SynapseBehaviorEvent::Mdns(mdns::Event::Discovered(list))) => {
-                    for (peer_id, _multiaddr) in list {
-                        println!("Synapse: mDNS Discovered Peer: {:?}", peer_id);
-                        self.swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
-                    }
                 }
                 SwarmEvent::Behaviour(SynapseBehaviorEvent::Gossipsub(gossipsub::Event::Message {
                     propagation_source: peer,
@@ -102,7 +103,7 @@ impl SynapseNode {
                     message,
                 })) => {
                     let text = String::from_utf8_lossy(&message.data);
-                    println!("Synapse: RECEIVED MSG from {:?}: '{}'", peer, text);
+                    println!("Synapse: [Topic: {}] MSG from {:?}: '{}'", message.topic, peer, text);
                 }
                 _ => {}
             }
@@ -114,6 +115,12 @@ impl SynapseNode {
         Ok(())
     }
 
+    pub fn publish_to_topic(&mut self, topic_name: &str, message: String) -> Result<()> {
+        let topic = gossipsub::IdentTopic::new(topic_name);
+        self.swarm.behaviour_mut().gossipsub.publish(topic, message.as_bytes())?;
+        Ok(())
+    }
+
     pub fn dial_peer(&mut self, addr: String) -> Result<()> {
         let multiaddr: Multiaddr = addr.parse()?;
         self.swarm.dial(multiaddr)?;
@@ -121,12 +128,9 @@ impl SynapseNode {
     }
 
     pub async fn wait_for_peers(&mut self) {
-        println!("Synapse: Waiting for GossipSub mesh connection...");
         let start = Instant::now();
-        
         loop {
             if self.swarm.network_info().num_peers() > 0 {
-                println!("Synapse: Connection established!");
                 break;
             }
             if start.elapsed() > Duration::from_secs(10) {
@@ -134,18 +138,34 @@ impl SynapseNode {
                 break;
             }
             tokio::select! {
+                // We reuse the drive logic here effectively
                 _ = self.swarm.select_next_some() => {},
                 _ = tokio::time::sleep(Duration::from_millis(100)) => {}
             }
         }
     }
 
-    // NEW FUNCTION: Keeps the network alive for a set duration
+    // UPDATED: Now prints events so we can see the listening address!
     pub async fn drive_for(&mut self, duration: Duration) {
         let start = Instant::now();
         while start.elapsed() < duration {
             tokio::select! {
-                _ = self.swarm.select_next_some() => {},
+                event = self.swarm.select_next_some() => {
+                    match event {
+                        SwarmEvent::NewListenAddr { address, .. } => {
+                             println!("Synapse: Listening on {:?}", address);
+                        }
+                        SwarmEvent::Behaviour(SynapseBehaviorEvent::Gossipsub(gossipsub::Event::Message {
+                            propagation_source: peer,
+                            message_id: _,
+                            message,
+                        })) => {
+                            let text = String::from_utf8_lossy(&message.data);
+                            println!("Synapse: [Topic: {}] MSG from {:?}: '{}'", message.topic, peer, text);
+                        }
+                        _ => {}
+                    }
+                },
                 _ = tokio::time::sleep(Duration::from_millis(10)) => {}
             }
         }
