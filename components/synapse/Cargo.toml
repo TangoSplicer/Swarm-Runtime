@@ -4,11 +4,11 @@ version = "0.6.2"
 edition = "2021"
 
 [dependencies]
-libp2p = { version = "0.53", features = ["tcp", "tls", "dns", "yamux", "noise", "gossipsub", "mdns", "ping", "macros", "tokio"] }
-tokio = { version = "1", features = ["full"] }
+libp2p = { version = "0.6.2", features = ["tcp", "tls", "dns", "yamux", "noise", "gossipsub", "mdns", "ping", "macros", "tokio"] }
+tokio = { version = "0.6.2", features = ["full"] }
 futures = "0.3"
 anyhow = "1.0"
 rand = "0.8" # NEW: Random number generation
 
 [dev-dependencies]
-tokio = { version = "1", features = ["full", "macros", "rt-multi-thread"] }
+tokio = { version = "0.6.2", features = ["full", "macros", "rt-multi-thread"] }

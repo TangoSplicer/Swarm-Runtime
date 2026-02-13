@@ -4,23 +4,23 @@ version = "0.6.2"
 edition = "2021"
 
 [dependencies]
-clap = { version = "4.0", features = ["derive"] }
-tokio = { version = "1", features = ["full"] }
+clap = { version = "0.6.2", features = ["derive"] }
+tokio = { version = "0.6.2", features = ["full"] }
 anyhow = "1.0"
 env_logger = "0.10"
 log = "0.4"
 sled = "0.34"
 async-trait = "0.1"
 futures = "0.3"
-libp2p = { version = "0.53", features = ["gossipsub", "macros", "tokio"] }
-ax_msg = { version = "0.1", package = "axum" } # Using alias to avoid conflict if needed
+libp2p = { version = "0.6.2", features = ["gossipsub", "macros", "tokio"] }
+ax_msg = { version = "0.6.2", package = "axum" } # Using alias to avoid conflict if needed
 axum = "0.6"
-tower-http = { version = "0.4", features = ["cors"] }
-serde = { version = "1.0", features = ["derive"] }
+tower-http = { version = "0.6.2", features = ["cors"] }
+serde = { version = "0.6.2", features = ["derive"] }
 serde_json = "1.0"
 base64 = "0.21"
 dashmap = "5.5" # NEW: For tracking pending requests
-uuid = { version = "1.4", features = ["v4"] } # NEW: For unique request IDs
+uuid = { version = "0.6.2", features = ["v4"] } # NEW: For unique request IDs
 
 # Internal Components
 prism = { path = "../prism" }
