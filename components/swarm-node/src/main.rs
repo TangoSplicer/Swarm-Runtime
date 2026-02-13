@@ -69,7 +69,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Gateway { port } => {
-            println!("=== Swarm HTTP Gateway v0.6.2 ===");
+            println!("=== Swarm HTTP Gateway v0.6.3 ===");
             let mut p2p_node = SynapseNode::new().await?;
             p2p_node.subscribe("swarm-shard-1")?;
             
@@ -145,7 +145,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Start { shard } => {
-            println!("=== Swarm Worker v0.6.2 ===");
+            println!("=== Swarm Worker v0.6.3 ===");
             let mut p2p_node = SynapseNode::new().await?;
             let shard_id = shard.unwrap_or(1);
             let db_arc = Arc::new(open_db(shard_id)?);

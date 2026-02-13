@@ -1,12 +1,12 @@
 [package]
 name = "lazarus"
-version = "0.6.2"
+version = "0.6.3"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "0.6.2", features = ["full"] }
+tokio = { version = "0.6.3", features = ["full"] }
 anyhow = "1.0"
 async-trait = "0.1"
 
 [dev-dependencies]
-tokio = { version = "0.6.2", features = ["full", "macros", "rt-multi-thread"] }
+tokio = { version = "0.6.3", features = ["full", "macros", "rt-multi-thread"] }

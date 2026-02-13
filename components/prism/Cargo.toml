@@ -1,11 +1,11 @@
 [package]
 name = "prism"
-version = "0.6.2"
+version = "0.6.3"
 edition = "2021"
 
 [dependencies]
 # We added "visit" to features
-syn = { version = "0.6.2", features = ["full", "extra-traits", "visit"] }
+syn = { version = "0.6.3", features = ["full", "extra-traits", "visit"] }
 quote = "1.0"
 proc-macro2 = "1.0"
 anyhow = "1.0"
