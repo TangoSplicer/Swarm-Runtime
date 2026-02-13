@@ -1,0 +1,13 @@
+[package]
+name = "hello-swarm"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Completely empty to ensure zero conflicts with networking crates
+
+[workspace]
+# This empty table breaks the inheritance from the parent directory

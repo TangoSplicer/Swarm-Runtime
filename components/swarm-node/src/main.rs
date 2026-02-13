@@ -4,13 +4,16 @@ use std::time::{Duration, Instant};
 use libp2p::swarm::SwarmEvent;
 use libp2p::gossipsub;
 use futures::StreamExt;
-use axum::{extract::{Query, State}, routing::get, Router};
+use axum::{extract::{State, Json}, routing::post, Router};
 use std::sync::Arc;
 use dashmap::DashMap;
 use uuid::Uuid;
 use tokio::sync::oneshot;
+use serde::Deserialize;
+use base64::{engine::general_purpose, Engine as _};
 
 use synapse::{SynapseNode, SynapseBehaviorEvent, RaftRole};
+use judge::Judge;
 
 #[derive(Parser)]
 #[command(name = "swarm")]
@@ -23,16 +26,17 @@ struct Cli {
 enum Commands {
     Start { #[arg(long)] shard: Option<u64> },
     Gateway { #[arg(long, default_value = "8080")] port: u16 },
-    Say { 
-        message: String, 
-        #[arg(long)] peer: Option<String>, 
-        #[arg(long)] shard: Option<u64> 
-    },
+    Say { message: String, #[arg(long)] peer: Option<String> },
+}
+
+#[derive(Deserialize)]
+struct DeployRequest {
+    wasm_base64: String,
 }
 
 struct AppState {
     pub node_tx: tokio::sync::mpsc::UnboundedSender<String>,
-    pub pending_responses: Arc<DashMap<String, oneshot::Sender<String>>>,
+    pub pending_tasks: Arc<DashMap<String, oneshot::Sender<String>>>,
 }
 
 fn open_db(shard_id: u64) -> Result<sled::Db> {
@@ -47,7 +51,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::Say { message, peer, shard: _ } => {
+        Commands::Say { message, peer } => {
             let mut p2p_node = SynapseNode::new().await?;
             if let Some(addr) = peer { let _ = p2p_node.dial_peer(addr.to_string()); }
             p2p_node.wait_for_peers().await;
@@ -56,42 +60,29 @@ async fn main() -> Result<()> {
         }
 
         Commands::Gateway { port } => {
-            println!("=== Swarm HTTP Gateway v0.4.0 ===");
+            println!("=== Swarm HTTP Gateway v0.6.0 ===");
             let mut p2p_node = SynapseNode::new().await?;
             p2p_node.subscribe("swarm-shard-1")?;
             
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-            let pending: Arc<DashMap<String, oneshot::Sender<String>>> = Arc::new(DashMap::new());
-            let shared_state = Arc::new(AppState { 
-                node_tx: tx, 
-                pending_responses: pending.clone() 
-            });
+            let pending = Arc::new(DashMap::new());
+            let shared_state = Arc::new(AppState { node_tx: tx, pending_tasks: pending.clone() });
 
             let app = Router::new()
-                .route("/set", get(|Query(params): Query<std::collections::HashMap<String, String>>, State(state): State<Arc<AppState>>| async move {
-                    if let (Some(k), Some(v)) = (params.get("key"), params.get("val")) {
-                        let _ = state.node_tx.send(format!("SET:{}:{}", k, v));
-                        return format!("OK: Set request broadcast\n");
-                    }
-                    "Error: key/val required\n".to_string()
-                }))
-                .route("/get", get(|Query(params): Query<std::collections::HashMap<String, String>>, State(state): State<Arc<AppState>>| async move {
-                    if let Some(k) = params.get("key") {
-                        let req_id = Uuid::new_v4().to_string();
-                        let (tx, rx) = oneshot::channel();
-                        state.pending_responses.insert(req_id.clone(), tx);
-                        let _ = state.node_tx.send(format!("GET:{}:{}", k, req_id));
-                        
-                        // Slightly longer timeout for cold starts
-                        match tokio::time::timeout(Duration::from_secs(6), rx).await {
-                            Ok(Ok(val)) => return format!("VALUE: {}\n", val),
-                            _ => {
-                                state.pending_responses.remove(&req_id);
-                                return "Error: Timeout (Mesh still warm-up or Key not found)\n".to_string();
-                            }
+                .route("/deploy", post(|State(state): State<Arc<AppState>>, Json(payload): Json<DeployRequest>| async move {
+                    let task_id = Uuid::new_v4().to_string();
+                    let (otx, orx) = oneshot::channel();
+                    state.pending_tasks.insert(task_id.clone(), otx);
+
+                    let _ = state.node_tx.send(format!("TASK:{}:{}", task_id, payload.wasm_base64));
+                    
+                    match tokio::time::timeout(Duration::from_secs(10), orx).await {
+                        Ok(Ok(res)) => format!("EXECUTION_SUCCESS: Result = {}\n", res),
+                        _ => {
+                            state.pending_tasks.remove(&task_id);
+                            format!("EXECUTION_TIMEOUT: Task {} failed\n", task_id)
                         }
                     }
-                    "Error: key required\n".to_string()
                 }))
                 .with_state(shared_state);
 
@@ -108,19 +99,19 @@ async fn main() -> Result<()> {
                             },
                             event = p2p_node.swarm.select_next_some() => {
                                 match event {
-                                    SwarmEvent::Behaviour(SynapseBehaviorEvent::Mdns(libp2p::mdns::Event::Discovered(list))) => {
-                                        for (_, addr) in list { let _ = p2p_node.dial_peer(addr.to_string()); }
-                                    },
-                                    SwarmEvent::Behaviour(SynapseBehaviorEvent::Gossipsub(gossipsub::Event::Message { message, .. })) => {
+                                    SwarmEvent::Behaviour(SynapseBehaviorEvent::Gossipsub(gossipsub::Event::Message { ref message, .. })) => {
                                         let text = String::from_utf8_lossy(&message.data);
-                                        if text.starts_with("RESULT:") {
+                                        if text.starts_with("TASK_RESULT:") {
                                             let parts: Vec<&str> = text.split(':').collect();
                                             if parts.len() == 3 {
-                                                if let Some((_, tx)) = pending.remove(parts[1]) {
-                                                    let _ = tx.send(parts[2].to_string());
+                                                if let Some((_, otx)) = pending.remove(parts[1]) {
+                                                    let _ = otx.send(parts[2].to_string());
                                                 }
                                             }
                                         }
+                                    },
+                                    SwarmEvent::Behaviour(SynapseBehaviorEvent::Mdns(libp2p::mdns::Event::Discovered(list))) => {
+                                        for (_, addr) in list { let _ = p2p_node.dial_peer(addr.to_string()); }
                                     },
                                     _ => {}
                                 }
@@ -132,14 +123,13 @@ async fn main() -> Result<()> {
         }
 
         Commands::Start { shard } => {
-            println!("=== Swarm Worker v0.4.0 ===");
+            println!("=== Swarm Worker v0.6.0 ===");
             let mut p2p_node = SynapseNode::new().await?;
+            let mut judge = Judge::new()?;
             let shard_id = shard.unwrap_or(1);
             let shard_channel = format!("swarm-shard-{}", shard_id);
             p2p_node.subscribe(&shard_channel)?;
-            let db = open_db(shard_id)?;
             println!("=== Worker Live (Shard {}) ===", shard_id);
-            let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(1));
 
             loop {
                 tokio::select! {
@@ -148,26 +138,20 @@ async fn main() -> Result<()> {
                             SwarmEvent::Behaviour(SynapseBehaviorEvent::Mdns(libp2p::mdns::Event::Discovered(list))) => {
                                 for (_, addr) in list { let _ = p2p_node.dial_peer(addr.to_string()); }
                             },
-                            SwarmEvent::Behaviour(SynapseBehaviorEvent::Gossipsub(gossipsub::Event::Message { message, .. })) => {
+                            SwarmEvent::Behaviour(SynapseBehaviorEvent::Gossipsub(gossipsub::Event::Message { ref message, .. })) => {
                                 let text = String::from_utf8_lossy(&message.data);
-                                let parts: Vec<&str> = text.split(':').collect();
-                                if text.starts_with("SET:") && p2p_node.role == RaftRole::Leader && parts.len() == 3 {
-                                    let _ = p2p_node.publish_to_topic(&shard_channel, text.replace("SET:", "REPLICATE:"));
-                                    let _ = db.insert(parts[1], parts[2].as_bytes());
-                                    let _ = db.flush();
-                                    println!("Storage: Saved {}={}", parts[1], parts[2]);
-                                } else if text.starts_with("REPLICATE:") && parts.len() == 3 {
-                                    let _ = db.insert(parts[1], parts[2].as_bytes());
-                                    let _ = db.flush();
-                                    println!("Storage: Replicated {}={}", parts[1], parts[2]);
-                                } else if text.starts_with("GET:") && parts.len() == 3 {
-                                    let key = parts[1];
-                                    let req_id = parts[2];
-                                    let val = match db.get(key) {
-                                        Ok(Some(v)) => String::from_utf8_lossy(&v).to_string(),
-                                        _ => "NOT_FOUND".to_string(),
-                                    };
-                                    let _ = p2p_node.publish_to_topic(&shard_channel, format!("RESULT:{}:{}", req_id, val));
+                                let parts: Vec<&str> = text.splitn(3, ':').collect();
+                                
+                                if text.starts_with("TASK:") && parts.len() == 3 {
+                                    let task_id = parts[1];
+                                    let b64 = parts[2];
+                                    if let Ok(wasm_bytes) = general_purpose::STANDARD.decode(b64) {
+                                        let result = match judge.execute(&wasm_bytes) {
+                                            Ok(res) => res.to_string(),
+                                            Err(e) => format!("Error: {}", e),
+                                        };
+                                        let _ = p2p_node.publish_to_topic(&shard_channel, format!("TASK_RESULT:{}:{}", task_id, result));
+                                    }
                                 } else if text.starts_with("HEARTBEAT:") {
                                     p2p_node.last_heartbeat = Instant::now();
                                 }
@@ -175,9 +159,9 @@ async fn main() -> Result<()> {
                             _ => {}
                         }
                     },
-                    _ = heartbeat_interval.tick() => {
-                        if p2p_node.role == RaftRole::Leader { let _ = p2p_node.send_heartbeat(&shard_channel); }
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {
                         p2p_node.check_election();
+                        if p2p_node.role == RaftRole::Leader { let _ = p2p_node.send_heartbeat(&shard_channel); }
                     }
                 }
             }
