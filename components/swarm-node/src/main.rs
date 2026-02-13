@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Gateway { port } => {
-            println!("=== Swarm HTTP Gateway v0.6.0 ===");
+            println!("=== Swarm HTTP Gateway v0.6.1 ===");
             let mut p2p_node = SynapseNode::new().await?;
             p2p_node.subscribe("swarm-shard-1")?;
             
@@ -123,10 +123,15 @@ async fn main() -> Result<()> {
         }
 
         Commands::Start { shard } => {
-            println!("=== Swarm Worker v0.6.0 ===");
+            println!("=== Swarm Worker v0.6.1 ===");
             let mut p2p_node = SynapseNode::new().await?;
-            let mut judge = Judge::new()?;
+            
+            // --- FIXED: Database and Judge Initialization Sequence ---
             let shard_id = shard.unwrap_or(1);
+            let db_arc = Arc::new(open_db(shard_id)?);
+            let mut judge = Judge::new(Some(db_arc.clone()))?;
+            // ---------------------------------------------------------
+
             let shard_channel = format!("swarm-shard-{}", shard_id);
             p2p_node.subscribe(&shard_channel)?;
             println!("=== Worker Live (Shard {}) ===", shard_id);

@@ -1,8 +1,9 @@
 [package]
 name = "judge"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 
 [dependencies]
 anyhow = "1.0"
 wasmer = "4.2" # The Wasm Engine
+sled = "0.34"
