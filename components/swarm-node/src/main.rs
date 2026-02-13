@@ -1,14 +1,16 @@
-use anyhow::Result; // FIX: Removed unused 'Context'
+use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use libp2p::swarm::SwarmEvent;
 use libp2p::gossipsub;
-use futures::StreamExt; // FIX: Added StreamExt for select_next_some
+use futures::StreamExt;
+use axum::{extract::{Query, State}, routing::get, Router};
+use std::sync::Arc;
+use dashmap::DashMap;
+use uuid::Uuid;
+use tokio::sync::oneshot;
 
-use judge::Judge;
-use synapse::{SynapseNode, SynapseBehaviorEvent};
-use lazarus::{Lazarus, Monitorable};
-use async_trait::async_trait;
+use synapse::{SynapseNode, SynapseBehaviorEvent, RaftRole};
 
 #[derive(Parser)]
 #[command(name = "swarm")]
@@ -19,75 +21,25 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Start {
-        #[arg(long)]
-        shard: Option<u64>,
-    },
-    Listen,
-    Say {
-        message: String,
-        #[arg(long)]
-        peer: Option<String>,
-        #[arg(long)]
-        shard: Option<u64>,
-    },
-    Check {
-        path: String,
+    Start { #[arg(long)] shard: Option<u64> },
+    Gateway { #[arg(long, default_value = "8080")] port: u16 },
+    Say { 
+        message: String, 
+        #[arg(long)] peer: Option<String>, 
+        #[arg(long)] shard: Option<u64> 
     },
 }
 
-struct ManagedNode {
-    running: bool,
-    role: String,
+struct AppState {
+    pub node_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    pub pending_responses: Arc<DashMap<String, oneshot::Sender<String>>>,
 }
 
-#[async_trait]
-impl Monitorable for ManagedNode {
-    fn name(&self) -> &str { &self.role }
-    async fn is_alive(&self) -> bool { self.running }
-    async fn restart(&mut self) -> Result<()> {
-        self.running = true;
-        Ok(())
-    }
-}
-
-// --- DATABASE LOGIC ---
 fn open_db(shard_id: u64) -> Result<sled::Db> {
     let path = format!("storage/shard_{}", shard_id);
-    println!("System: Mounting Storage Partition -> {}", path);
     let db = sled::open(path)?;
     Ok(db)
 }
-
-fn process_command(db: &sled::Db, msg: &str) -> String {
-    let parts: Vec<&str> = msg.splitn(3, ':').collect();
-    match parts[0] {
-        "SET" if parts.len() == 3 => {
-            let key = parts[1];
-            let val = parts[2];
-            match db.insert(key, val.as_bytes()) {
-                Ok(_) => {
-                    let _ = db.flush();
-                    format!("DB_WRITE_OK: {} = {}", key, val)
-                },
-                Err(e) => format!("DB_ERROR: {}", e),
-            }
-        },
-        "GET" if parts.len() == 2 => {
-            let key = parts[1];
-            match db.get(key) {
-                Ok(Some(val)) => {
-                    let s = String::from_utf8_lossy(&val);
-                    format!("DB_READ_OK: {} = {}", key, s)
-                },
-                Ok(None) => format!("DB_MISS: Key '{}' not found.", key),
-                Err(e) => format!("DB_ERROR: {}", e),
-            }
-        },
-        _ => format!("IGNORED: Unknown command format '{}'", msg),
-    }
-}
-// ----------------------
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -95,99 +47,138 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::Check { path } => {
-            let compiler = prism::PrismCompiler::new();
-            let code = std::fs::read_to_string(path).unwrap_or("fn main() {}".to_string());
-            match compiler.transpile(&code, 4) {
-                Ok(plan) => println!("SUCCESS:\n{}", plan),
-                Err(e) => println!("FAILURE: {}", e),
-            }
-        }
-        Commands::Listen => {
-            println!("=== Swarm Network Listener ===");
+        Commands::Say { message, peer, shard: _ } => {
             let mut p2p_node = SynapseNode::new().await?;
-            println!("System: Connected! Peer ID: {}", p2p_node.peer_id);
-            p2p_node.subscribe("swarm-shard-1")?;
-            p2p_node.wait_for_event().await;
-        }
-        Commands::Say { message, peer, shard } => {
-            println!("=== Swarm Broadcaster ===");
-            let mut p2p_node = SynapseNode::new().await?;
-            if let Some(addr) = peer {
-                println!("System: Dialing peer at {}...", addr);
-                p2p_node.dial_peer(addr.clone())?;
-            }
+            if let Some(addr) = peer { let _ = p2p_node.dial_peer(addr.to_string()); }
             p2p_node.wait_for_peers().await;
-            p2p_node.drive_for(Duration::from_secs(3)).await;
-
-            if let Some(shard_id) = shard {
-                let topic = format!("swarm-shard-{}", shard_id);
-                println!("System: Sending to SHARD {}: '{}'", shard_id, message);
-                p2p_node.publish_to_topic(&topic, message.clone())?;
-            } else {
-                p2p_node.publish(message.clone())?;
-            }
-            
-            println!("SUCCESS: Command Sent.");
             p2p_node.drive_for(Duration::from_secs(1)).await;
+            p2p_node.publish(message.to_string())?;
         }
-        Commands::Start { shard } => {
-            println!("=== Swarm Runtime v0.4.0 ===");
-            println!("System: Boot sequence initiated...");
 
-            let _judge = Judge::new()?;
+        Commands::Gateway { port } => {
+            println!("=== Swarm HTTP Gateway v0.4.0 ===");
             let mut p2p_node = SynapseNode::new().await?;
+            p2p_node.subscribe("swarm-shard-1")?;
             
-            let (role_name, db) = match shard {
-                Some(id) => {
-                    let channel = format!("swarm-shard-{}", id);
-                    println!("System: ROLE ASSIGNED -> Worker for Shard {}", id);
-                    p2p_node.subscribe(&channel)?;
-                    
-                    // FIX: Added dereference (*id) here
-                    let db = open_db(*id)?;
-                    (format!("Shard {} Worker", id), Some(db))
-                },
-                None => {
-                    println!("System: ROLE ASSIGNED -> General Observer");
-                    ("Observer".to_string(), None)
-                }
-            };
-
-            println!("System: Node is live! Peer ID: {}", p2p_node.peer_id);
-            
-            let mut managed_node = ManagedNode { running: true, role: role_name };
-            tokio::spawn(async move {
-                let watchdog = Lazarus::new(5);
-                let _ = watchdog.watch(&mut managed_node).await;
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            let pending: Arc<DashMap<String, oneshot::Sender<String>>> = Arc::new(DashMap::new());
+            let shared_state = Arc::new(AppState { 
+                node_tx: tx, 
+                pending_responses: pending.clone() 
             });
 
-            println!("=== System Fully Operational ===");
-            
+            let app = Router::new()
+                .route("/set", get(|Query(params): Query<std::collections::HashMap<String, String>>, State(state): State<Arc<AppState>>| async move {
+                    if let (Some(k), Some(v)) = (params.get("key"), params.get("val")) {
+                        let _ = state.node_tx.send(format!("SET:{}:{}", k, v));
+                        return format!("OK: Set request broadcast\n");
+                    }
+                    "Error: key/val required\n".to_string()
+                }))
+                .route("/get", get(|Query(params): Query<std::collections::HashMap<String, String>>, State(state): State<Arc<AppState>>| async move {
+                    if let Some(k) = params.get("key") {
+                        let req_id = Uuid::new_v4().to_string();
+                        let (tx, rx) = oneshot::channel();
+                        state.pending_responses.insert(req_id.clone(), tx);
+                        let _ = state.node_tx.send(format!("GET:{}:{}", k, req_id));
+                        
+                        // Slightly longer timeout for cold starts
+                        match tokio::time::timeout(Duration::from_secs(6), rx).await {
+                            Ok(Ok(val)) => return format!("VALUE: {}\n", val),
+                            _ => {
+                                state.pending_responses.remove(&req_id);
+                                return "Error: Timeout (Mesh still warm-up or Key not found)\n".to_string();
+                            }
+                        }
+                    }
+                    "Error: key required\n".to_string()
+                }))
+                .with_state(shared_state);
+
+            let addr = std::net::SocketAddr::from(([0, 0, 0, 0], *port));
+            println!("Gateway: Listening on http://{}", addr);
+
+            tokio::select! {
+                _ = axum::Server::bind(&addr).serve(app.into_make_service()) => {},
+                _ = async {
+                    loop {
+                        tokio::select! {
+                            Some(cmd) = rx.recv() => {
+                                let _ = p2p_node.publish_to_topic("swarm-shard-1", cmd);
+                            },
+                            event = p2p_node.swarm.select_next_some() => {
+                                match event {
+                                    SwarmEvent::Behaviour(SynapseBehaviorEvent::Mdns(libp2p::mdns::Event::Discovered(list))) => {
+                                        for (_, addr) in list { let _ = p2p_node.dial_peer(addr.to_string()); }
+                                    },
+                                    SwarmEvent::Behaviour(SynapseBehaviorEvent::Gossipsub(gossipsub::Event::Message { message, .. })) => {
+                                        let text = String::from_utf8_lossy(&message.data);
+                                        if text.starts_with("RESULT:") {
+                                            let parts: Vec<&str> = text.split(':').collect();
+                                            if parts.len() == 3 {
+                                                if let Some((_, tx)) = pending.remove(parts[1]) {
+                                                    let _ = tx.send(parts[2].to_string());
+                                                }
+                                            }
+                                        }
+                                    },
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                } => {}
+            }
+        }
+
+        Commands::Start { shard } => {
+            println!("=== Swarm Worker v0.4.0 ===");
+            let mut p2p_node = SynapseNode::new().await?;
+            let shard_id = shard.unwrap_or(1);
+            let shard_channel = format!("swarm-shard-{}", shard_id);
+            p2p_node.subscribe(&shard_channel)?;
+            let db = open_db(shard_id)?;
+            println!("=== Worker Live (Shard {}) ===", shard_id);
+            let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(1));
+
             loop {
                 tokio::select! {
                     event = p2p_node.swarm.select_next_some() => {
                         match event {
-                            SwarmEvent::NewListenAddr { address, .. } => {
-                                 println!("Synapse: Listening on {:?}", address);
+                            SwarmEvent::Behaviour(SynapseBehaviorEvent::Mdns(libp2p::mdns::Event::Discovered(list))) => {
+                                for (_, addr) in list { let _ = p2p_node.dial_peer(addr.to_string()); }
                             },
-                            SwarmEvent::Behaviour(SynapseBehaviorEvent::Gossipsub(gossipsub::Event::Message {
-                                propagation_source: _peer,
-                                message_id: _,
-                                message,
-                            })) => {
+                            SwarmEvent::Behaviour(SynapseBehaviorEvent::Gossipsub(gossipsub::Event::Message { message, .. })) => {
                                 let text = String::from_utf8_lossy(&message.data);
-                                println!("Synapse: [Topic: {}] CMD: '{}'", message.topic, text);
-
-                                if let Some(database) = &db {
-                                    let result = process_command(database, &text);
-                                    println!("Storage: {}", result);
+                                let parts: Vec<&str> = text.split(':').collect();
+                                if text.starts_with("SET:") && p2p_node.role == RaftRole::Leader && parts.len() == 3 {
+                                    let _ = p2p_node.publish_to_topic(&shard_channel, text.replace("SET:", "REPLICATE:"));
+                                    let _ = db.insert(parts[1], parts[2].as_bytes());
+                                    let _ = db.flush();
+                                    println!("Storage: Saved {}={}", parts[1], parts[2]);
+                                } else if text.starts_with("REPLICATE:") && parts.len() == 3 {
+                                    let _ = db.insert(parts[1], parts[2].as_bytes());
+                                    let _ = db.flush();
+                                    println!("Storage: Replicated {}={}", parts[1], parts[2]);
+                                } else if text.starts_with("GET:") && parts.len() == 3 {
+                                    let key = parts[1];
+                                    let req_id = parts[2];
+                                    let val = match db.get(key) {
+                                        Ok(Some(v)) => String::from_utf8_lossy(&v).to_string(),
+                                        _ => "NOT_FOUND".to_string(),
+                                    };
+                                    let _ = p2p_node.publish_to_topic(&shard_channel, format!("RESULT:{}:{}", req_id, val));
+                                } else if text.starts_with("HEARTBEAT:") {
+                                    p2p_node.last_heartbeat = Instant::now();
                                 }
                             },
                             _ => {}
                         }
                     },
-                    _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+                    _ = heartbeat_interval.tick() => {
+                        if p2p_node.role == RaftRole::Leader { let _ = p2p_node.send_heartbeat(&shard_channel); }
+                        p2p_node.check_election();
+                    }
                 }
             }
         }

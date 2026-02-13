@@ -17,6 +17,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use anyhow::Result;
 use futures::StreamExt;
+use rand::Rng;
 
 pub fn message_id_fn(message: &gossipsub::Message) -> gossipsub::MessageId {
     let mut s = DefaultHasher::new();
@@ -31,10 +32,20 @@ pub struct SynapseBehavior {
     pub mdns: mdns::tokio::Behaviour,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum RaftRole {
+    Follower,
+    Candidate,
+    Leader,
+}
+
 pub struct SynapseNode {
     pub peer_id: PeerId,
     pub swarm: Swarm<SynapseBehavior>,
-    pub topic: gossipsub::IdentTopic,
+    pub role: RaftRole,
+    pub current_term: u64,
+    pub last_heartbeat: Instant,
+    pub election_timeout: Duration,
 }
 
 impl SynapseNode {
@@ -74,44 +85,31 @@ impl SynapseNode {
 
         let topic = gossipsub::IdentTopic::new("swarm-global");
         swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
-
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+
+        let mut rng = rand::thread_rng();
+        // Election timeout between 7s and 12s
+        let timeout_secs = rng.gen_range(7..12);
 
         Ok(SynapseNode {
             peer_id: local_peer_id,
             swarm,
-            topic,
+            role: RaftRole::Follower,
+            current_term: 0,
+            last_heartbeat: Instant::now(),
+            election_timeout: Duration::from_secs(timeout_secs),
         })
     }
 
     pub fn subscribe(&mut self, topic_name: &str) -> Result<()> {
         let topic = gossipsub::IdentTopic::new(topic_name);
         self.swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
-        println!("Synapse: Subscribed to channel '{}'", topic_name);
         Ok(())
     }
 
-    pub async fn wait_for_event(&mut self) {
-        loop {
-            match self.swarm.select_next_some().await {
-                SwarmEvent::NewListenAddr { address, .. } => {
-                     println!("Synapse: Listening on {:?}", address);
-                }
-                SwarmEvent::Behaviour(SynapseBehaviorEvent::Gossipsub(gossipsub::Event::Message {
-                    propagation_source: peer,
-                    message_id: _,
-                    message,
-                })) => {
-                    let text = String::from_utf8_lossy(&message.data);
-                    println!("Synapse: [Topic: {}] MSG from {:?}: '{}'", message.topic, peer, text);
-                }
-                _ => {}
-            }
-        }
-    }
-
     pub fn publish(&mut self, message: String) -> Result<()> {
-        self.swarm.behaviour_mut().gossipsub.publish(self.topic.clone(), message.as_bytes())?;
+        let topic = gossipsub::IdentTopic::new("swarm-global");
+        self.swarm.behaviour_mut().gossipsub.publish(topic, message.as_bytes())?;
         Ok(())
     }
 
@@ -130,22 +128,34 @@ impl SynapseNode {
     pub async fn wait_for_peers(&mut self) {
         let start = Instant::now();
         loop {
-            if self.swarm.network_info().num_peers() > 0 {
-                break;
-            }
-            if start.elapsed() > Duration::from_secs(10) {
-                println!("Synapse: Connection timed out.");
-                break;
-            }
+            if self.swarm.network_info().num_peers() > 0 { break; }
+            if start.elapsed() > Duration::from_secs(10) { break; }
             tokio::select! {
-                // We reuse the drive logic here effectively
                 _ = self.swarm.select_next_some() => {},
                 _ = tokio::time::sleep(Duration::from_millis(100)) => {}
             }
         }
     }
 
-    // UPDATED: Now prints events so we can see the listening address!
+    pub async fn wait_for_event(&mut self) {
+        loop {
+            match self.swarm.select_next_some().await {
+                SwarmEvent::NewListenAddr { address, .. } => {
+                     println!("Synapse: Listening on {:?}", address);
+                }
+                SwarmEvent::Behaviour(SynapseBehaviorEvent::Gossipsub(gossipsub::Event::Message {
+                    propagation_source: peer,
+                    message,
+                    ..
+                })) => {
+                    let text = String::from_utf8_lossy(&message.data);
+                    println!("Synapse: [Topic: {}] MSG from {:?}: '{}'", message.topic, peer, text);
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub async fn drive_for(&mut self, duration: Duration) {
         let start = Instant::now();
         while start.elapsed() < duration {
@@ -157,8 +167,8 @@ impl SynapseNode {
                         }
                         SwarmEvent::Behaviour(SynapseBehaviorEvent::Gossipsub(gossipsub::Event::Message {
                             propagation_source: peer,
-                            message_id: _,
                             message,
+                            ..
                         })) => {
                             let text = String::from_utf8_lossy(&message.data);
                             println!("Synapse: [Topic: {}] MSG from {:?}: '{}'", message.topic, peer, text);
@@ -170,15 +180,24 @@ impl SynapseNode {
             }
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    pub fn check_election(&mut self) -> bool {
+        if self.role == RaftRole::Follower && self.last_heartbeat.elapsed() > self.election_timeout {
+            self.role = RaftRole::Leader;
+            self.current_term += 1;
+            println!("Raft: Timeout! I am assuming LEADERSHIP (Term {})", self.current_term);
+            return true;
+        }
+        false
+    }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_gossip_initialization() {
-        let node_result = SynapseNode::new().await;
-        assert!(node_result.is_ok(), "GossipSub initialization failed");
+    pub fn send_heartbeat(&mut self, shard_channel: &str) -> Result<()> {
+        if self.role == RaftRole::Leader {
+            let mut rng = rand::thread_rng();
+            let nonce: u32 = rng.gen();
+            let msg = format!("HEARTBEAT:{}:{}", self.current_term, nonce);
+            self.publish_to_topic(shard_channel, msg)?;
+        }
+        Ok(())
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "swarm-node"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 
 [dependencies]
@@ -11,9 +11,15 @@ env_logger = "0.10"
 log = "0.4"
 sled = "0.34"
 async-trait = "0.1"
-futures = "0.3" 
-# FIX: Removed "swarm" feature, added "macros" and "tokio" to match synapse
+futures = "0.3"
 libp2p = { version = "0.53", features = ["gossipsub", "macros", "tokio"] }
+ax_msg = { version = "0.1", package = "axum" } # Using alias to avoid conflict if needed
+axum = "0.6"
+tower-http = { version = "0.4", features = ["cors"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dashmap = "5.5" # NEW: For tracking pending requests
+uuid = { version = "1.4", features = ["v4"] } # NEW: For unique request IDs
 
 # Internal Components
 prism = { path = "../prism" }
