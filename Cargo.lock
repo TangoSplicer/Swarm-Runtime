@@ -1850,7 +1850,7 @@ dependencies = [
 
 [[package]]
 name = "judge"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "sled",
@@ -1859,7 +1859,7 @@ dependencies = [
 
 [[package]]
 name = "lazarus"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2824,7 +2824,7 @@ dependencies = [
 
 [[package]]
 name = "prism"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "proc-macro2",
@@ -3660,7 +3660,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "swarm-node"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3709,7 +3709,7 @@ dependencies = [
 
 [[package]]
 name = "synapse"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "futures",
