@@ -6,4 +6,5 @@ members = [
     "components/lazarus",
     "components/swarm-node"
 ]
+# Removed "examples/shard-worker" from this list!
 resolver = "2"

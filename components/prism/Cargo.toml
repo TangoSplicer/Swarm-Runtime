@@ -1,15 +1,10 @@
 [package]
 name = "prism"
-version = "0.6.3"
+version = "0.8.0"
 edition = "2021"
 
 [dependencies]
-# We added "visit" to features
-syn = { version = "0.6.3", features = ["full", "extra-traits", "visit"] }
+syn = "2.0"
 quote = "1.0"
 proc-macro2 = "1.0"
 anyhow = "1.0"
-
-[lib]
-name = "prism"
-path = "src/lib.rs"

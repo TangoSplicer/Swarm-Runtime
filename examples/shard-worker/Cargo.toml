@@ -1,0 +1,13 @@
+[package]
+name = "shard-worker"
+version = "0.1.0"
+edition = "2021"
+
+# CRITICAL: This tag isolates the worker from the root workspace
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# No external dependencies

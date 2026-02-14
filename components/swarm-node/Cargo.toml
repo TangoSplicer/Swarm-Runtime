@@ -1,29 +1,29 @@
 [package]
 name = "swarm-node"
-version = "0.6.3"
+version = "0.8.0"
 edition = "2021"
 
 [dependencies]
-clap = { version = "0.6.3", features = ["derive"] }
-tokio = { version = "0.6.3", features = ["full"] }
-anyhow = "1.0"
-env_logger = "0.10"
-log = "0.4"
-sled = "0.34"
-async-trait = "0.1"
+# Core Logic
+tokio = { version = "1.28", features = ["full"] }
 futures = "0.3"
-libp2p = { version = "0.6.3", features = ["gossipsub", "macros", "tokio"] }
-ax_msg = { version = "0.6.3", package = "axum" } # Using alias to avoid conflict if needed
-axum = "0.6"
-tower-http = { version = "0.6.3", features = ["cors"] }
-serde = { version = "0.6.3", features = ["derive"] }
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+uuid = { version = "1.4", features = ["v4", "serde"] }
+dashmap = "5.5"
 base64 = "0.21"
-dashmap = "5.5" # NEW: For tracking pending requests
-uuid = { version = "0.6.3", features = ["v4"] } # NEW: For unique request IDs
+log = "0.4"
+env_logger = "0.10"
+clap = { version = "4.3", features = ["derive"] }
+sled = "0.34"
+
+# Networking (Must match Synapse version)
+libp2p = { version = "0.53.0", features = ["gossipsub", "mdns", "macros", "tokio"] }
+
+# Web Server
+axum = { version = "0.6", features = ["macros"] }
 
 # Internal Components
-prism = { path = "../prism" }
 synapse = { path = "../synapse" }
 judge = { path = "../judge" }
-lazarus = { path = "../lazarus" }
