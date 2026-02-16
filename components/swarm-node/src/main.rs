@@ -39,8 +39,15 @@ pub struct SwarmStatus {
 
 pub struct AppState {
     pub node_tx: tokio::sync::mpsc::UnboundedSender<String>,
-    pub aggregations: Arc<DashMap<Uuid, Arc<Mutex<Vec<i32>>>>>,
+    pub aggregations: Arc<DashMap<Uuid, Arc<Mutex<Vec<(u32, i32)>>>>>,
     pub stats: Arc<Mutex<SwarmStatus>>,
+}
+
+#[derive(Serialize)]
+struct DeployResponse {
+    status: String,
+    total_sum: i32,
+    breakdown: Vec<(u32, i32)>,
 }
 
 #[tokio::main]
@@ -53,7 +60,7 @@ async fn main() -> Result<()> {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
             let aggregations = Arc::new(DashMap::new());
             let stats = Arc::new(Mutex::new(SwarmStatus { 
-                version: "0.9.2".to_string(), role: "GATEWAY".to_string(), peers_count: 0, peers: HashSet::new(),
+                version: "0.9.3".to_string(), role: "GATEWAY".to_string(), peers_count: 0, peers: HashSet::new(),
             }));
             let shared_state = Arc::new(AppState { node_tx: tx, aggregations: aggregations.clone(), stats: stats.clone() });
             
@@ -68,8 +75,12 @@ async fn main() -> Result<()> {
                                     let text = String::from_utf8_lossy(&message.data);
                                     if text.starts_with("SHARD_RESULT:") {
                                         let parts: Vec<&str> = text.split(':').collect();
-                                        if let (Ok(tid), Ok(val)) = (Uuid::parse_str(parts[1]), parts[3].parse::<i32>()) {
-                                            if let Some(agg_ref) = agg_c.get(&tid) { agg_ref.value().lock().await.push(val); }
+                                        if parts.len() >= 4 {
+                                            if let (Ok(tid), Ok(s_idx), Ok(val)) = (Uuid::parse_str(parts[1]), parts[2].parse::<u32>(), parts[3].parse::<i32>()) {
+                                                if let Some(agg_ref) = agg_c.get(&tid) { 
+                                                    agg_ref.value().lock().await.push((s_idx, val)); 
+                                                }
+                                            }
                                         }
                                     }
                                 },
@@ -108,8 +119,19 @@ async fn main() -> Result<()> {
                             if text.starts_with("SHARD:") {
                                 if let Ok(shard_data) = serde_json::from_str::<Shard>(&text[6..]) {
                                     if let Ok(wasm) = general_purpose::STANDARD.decode(&shard_data.wasm_image) {
+                                        // EXECUTION LOGIC
                                         let mut judge = Judge::new(None).unwrap();
-                                        let res = judge.execute(&wasm, Some((shard_data.data_range_start, shard_data.data_range_end))).unwrap_or(-1);
+                                        // Explicitly cast ranges to what our Judge expects
+                                        let range = (shard_data.data_range_start, shard_data.data_range_end);
+                                        
+                                        let res = match judge.execute(&wasm, Some(range)) {
+                                            Ok(val) => val,
+                                            Err(e) => {
+                                                println!("❌ EXECUTION ERROR (Shard {}): {:?}", shard_data.shard_index, e);
+                                                -1
+                                            }
+                                        };
+                                        
                                         println!("✅ Computed Shard {}: Result = {}", shard_data.shard_index, res);
                                         let _ = p2p_node.publish_to_topic("swarm-shard-1", format!("SHARD_RESULT:{}:{}:{}", shard_data.parent_task_id, shard_data.shard_index, res));
                                     }
@@ -124,9 +146,10 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn handle_deploy(State(state): State<Arc<AppState>>, Json(payload): Json<ShardedDeployRequest>) -> (StatusCode, String) {
+async fn handle_deploy(State(state): State<Arc<AppState>>, Json(payload): Json<ShardedDeployRequest>) -> (StatusCode, Json<DeployResponse>) {
     let task_id = Uuid::new_v4();
     let peer_count = state.stats.lock().await.peers_count.max(1);
+    
     state.aggregations.insert(task_id, Arc::new(Mutex::new(Vec::new())));
     
     let chunk_size = payload.range_size / peer_count as u64;
@@ -137,18 +160,23 @@ async fn handle_deploy(State(state): State<Arc<AppState>>, Json(payload): Json<S
         let _ = state.node_tx.send(format!("SHARD:{}", serde_json::to_string(&shard).unwrap()));
     }
 
-    // Wait loop
+    // Wait for results
     for _ in 0..100 { 
         if let Some(agg_ref) = state.aggregations.get(&task_id) {
             let results = agg_ref.value().lock().await;
             if results.len() >= peer_count {
-                let sum: i32 = results.iter().sum();
-                return (StatusCode::OK, format!("SUCCESS: Parallel Sum = {} (from {} shards)", sum, peer_count));
+                let sum: i32 = results.iter().map(|(_, val)| val).sum();
+                return (StatusCode::OK, Json(DeployResponse {
+                    status: "Success".to_string(),
+                    total_sum: sum,
+                    breakdown: results.clone()
+                }));
             }
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    (StatusCode::GATEWAY_TIMEOUT, "Broadcast Initiated, but computation timed out.".to_string())
+    
+    (StatusCode::GATEWAY_TIMEOUT, Json(DeployResponse { status: "Timeout".to_string(), total_sum: 0, breakdown: vec![] }))
 }
 
 async fn dashboard(State(state): State<Arc<AppState>>) -> Html<String> {
@@ -175,11 +203,15 @@ async fn dashboard(State(state): State<Arc<AppState>>) -> Html<String> {
             .node-card {{ background:#0b0f1a; padding:15px; border-radius:10px; margin-top:10px; border:1px solid #232a3d; }}
             .node-id {{ font-family:monospace; font-size:10px; color:#94a3b8; overflow:hidden; text-overflow:ellipsis; }}
             .btn {{ background:var(--accent); color:white; border:none; width:100%; padding:16px; border-radius:10px; font-weight:bold; margin-top:15px; cursor:pointer; }}
-            #log {{ background:#000; color:var(--green); padding:12px; font-family:monospace; height:120px; overflow-y:auto; border-radius:8px; border:1px solid #232a3d; margin-top:15px; font-size:11px; }}
+            
             .std-input {{ width: 100%; padding: 10px; background: #0b0f1a; border: 1px solid #334155; color: #fff; border-radius: 6px; margin-bottom: 10px; box-sizing: border-box; }}
+            
+            table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+            td, th {{ padding: 8px; text-align: left; font-size: 12px; border-bottom: 1px solid #334155; }}
+            th {{ color: #94a3b8; }}
         </style></head>
         <body><div class="app">
-            <div style="display:flex; justify-content:space-between; align-items:center;"><h1>Swarm Cluster</h1><div style="color:var(--green); font-size:11px; border:1px solid var(--green); padding:2px 8px; border-radius:4px; font-weight:bold;">v0.9.2</div></div>
+            <div style="display:flex; justify-content:space-between; align-items:center;"><h1>Swarm Cluster</h1><div style="color:var(--green); font-size:11px; border:1px solid var(--green); padding:2px 8px; border-radius:4px; font-weight:bold;">v0.9.3</div></div>
             <div style="color:#94a3b8; font-size:12px; margin-bottom:25px;">Distributed Compute Engine</div>
             <div class="card blue"><div style="color:#94a3b8; font-size:11px; text-transform:uppercase;">Connected Peers</div><div style="font-size:28px; font-weight:700;">{}</div></div>
             
@@ -188,51 +220,58 @@ async fn dashboard(State(state): State<Arc<AppState>>) -> Html<String> {
                 <input type="file" id="file_in" class="std-input">
                 <button class="btn" onclick="startBroadcast()">BROADCAST TO SWARM</button>
             </div>
+
+            <div class="card" id="res-card" style="display:none;">
+                <div style="font-weight:bold; color:var(--green);">✅ Computation Complete</div>
+                <div style="font-size:24px; font-weight:bold; margin:10px 0;" id="total-sum"></div>
+                <table id="res-table">
+                    <thead><tr><th>Shard ID</th><th>Result</th></tr></thead>
+                    <tbody id="res-body"></tbody>
+                </table>
+            </div>
             
             <div class="card" style="padding:15px;"><div style="color:#94a3b8; font-size:11px; text-transform:uppercase;">Live Peer Map</div>{}</div>
-            <div id="log">> System ready.</div>
         </div>
         <script>
-            function logMsg(msg) {{
-                const log = document.getElementById('log');
-                log.innerHTML += "<br>> " + msg;
-                log.scrollTop = log.scrollHeight;
-            }}
+            let b64 = "";
+
+            document.getElementById('file_in').addEventListener('change', function(e) {{
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = function(ev) {{ b64 = ev.target.result.split(',')[1]; }};
+                reader.readAsDataURL(file);
+            }});
 
             async function startBroadcast() {{
-                const input = document.getElementById('file_in');
-                const file = input.files[0];
-
-                if (!file) {{
-                    alert("Please select a file using the box above!");
-                    return;
-                }}
-
-                logMsg("Reading: " + file.name);
-
-                // Read file ATOMICALLY when button is clicked
-                const reader = new FileReader();
-                reader.onerror = (e) => logMsg("❌ Error reading file: " + e);
-                reader.onload = async (e) => {{
-                    try {{
-                        const b64 = e.target.result.split(',')[1];
-                        logMsg("Encoded " + b64.length + " bytes.");
-                        logMsg("Broadcasting to swarm...");
-                        
-                        const res = await fetch('/deploy/shard', {{
-                            method: 'POST',
-                            headers: {{ 'Content-Type': 'application/json' }},
-                            body: JSON.stringify({{ wasm_base64: b64, range_size: 100 }})
-                        }});
-                        const text = await res.text();
-                        logMsg(text);
-                    }} catch (err) {{
-                        logMsg("❌ Network Error: " + err);
-                    }}
-                }};
+                if(!b64) return alert("Select a file first!");
+                document.getElementById('res-card').style.display = 'none';
                 
-                reader.readAsDataURL(file);
+                try {{
+                    const res = await fetch('/deploy/shard', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{ wasm_base64: b64, range_size: 100 }})
+                    }});
+                    
+                    const data = await res.json();
+                    document.getElementById('res-card').style.display = 'block';
+                    document.getElementById('total-sum').innerText = "Total: " + data.total_sum;
+                    
+                    const tbody = document.getElementById('res-body');
+                    tbody.innerHTML = "";
+                    data.breakdown.forEach(row => {{
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `<td>Shard ${{row[0]}}</td><td style="font-family:monospace; color:#38bdf8;">${{row[1]}}</td>`;
+                        tbody.appendChild(tr);
+                    }});
+                    
+                }} catch (e) {{
+                    alert("Error: " + e);
+                }}
             }}
+            
+            setInterval(() => {{ if(!b64) location.reload(); }}, 5000);
         </script></body></html>"##, s.peers_count, peer_map
     );
     Html(html)
