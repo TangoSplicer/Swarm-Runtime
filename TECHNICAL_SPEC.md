@@ -1,33 +1,34 @@
 # Swarm Runtime: Technical Specification v0.9.3
 
-## 1. Architecture: "The Starburst"
-* **Pattern:** Hub-and-Spoke (Logical) / Mesh (Physical).
-* **Data Flow:**
-    1.  **User:** Uploads `.wasm` (via `multipart/form-data` or JSON-base64) to Gateway.
-    2.  **Gateway:**
-        * Calculates `PeerCount`.
-        * Splits `JobRange` (e.g., 0-100) into chunks.
-        * Broadcasts `SHARD: { task_id, wasm_bytes, start, end }` via GossipSub.
-    3.  **Workers:**
-        * Receive `SHARD` message.
-        * Compile Wasm via `Wasmer`.
-        * Execute `execute(start, end)`.
-        * Publish `SHARD_RESULT: { task_id, result }`.
-    4.  **Gateway:** Aggregates results into a `DashMap` and returns JSON to UI.
+## 1. System Architecture
+* **Topology:** Physical Mesh (Libp2p), Logical Star (Gateway-Coordinator).
+* **Transport:** TCP/IP via Libp2p (Noise Encryption, Yamux Multiplexing).
+* **Consensus:** None (Stateless Compute). Result aggregation happens at Gateway.
 
-## 2. The Protocol (GossipSub)
-* **Topic:** `swarm-shard-1`
-* **Message Format:** String-based (for easy debugging).
-    * `SHARD:<JSON_PAYLOAD>`
-    * `SHARD_RESULT:<UUID>:<SHARD_IDX>:<VALUE>`
+## 2. Core Components
+### A. The Gateway (Orchestrator)
+* **Stack:** Rust, Axum, Tokio.
+* **Role:**
+    1. Accepts Wasm via **Atomic Broadcast** (Memory-buffered POST).
+    2. Shards data range (`u64` range -> `PeerCount`).
+    3. Publishes `SHARD` packet to `swarm-shard-1`.
+    4. Aggregates `SHARD_RESULT` messages in a `DashMap`.
 
-## 3. The Runtime (Judge)
-* **Engine:** Wasmer
-* **Signature:** Strict `(i32, i32) -> i32`
-* **Memory:** Ephemeral (New instance per shard execution).
+### B. The Worker (Shard)
+* **Stack:** Rust, Wasmer, Libp2p.
+* **Role:**
+    1. Subscribes to `swarm-shard-1`.
+    2. Decodes `SHARD` packet.
+    3. **Runtime:** Instantiates Wasmer with strict `(i32, i32) -> i32` signature.
+    4. Executes and publishes `SHARD_RESULT`.
 
-## 4. The Dashboard (UI)
-* **Tech:** Server-Side Rendered HTML (via Axum) + Vanilla JS.
-* **Key Mechanic:** "Atomic Broadcast"
-    * File is read into memory *only* when "Broadcast" is clicked.
-    * Prevents mobile browser security blocks on file inputs.
+## 3. Data Protocols
+* **Input:** Multipart/JSON containing Base64 Wasm.
+* **Network Packets (GossipSub):**
+    * `SHARD:{task_id}:{shard_idx}:{total}:{start}:{end}:{b64_wasm}`
+    * `SHARD_RESULT:{task_id}:{shard_idx}:{value}`
+
+## 4. Current Constraints (v0.9.3)
+* **Wasm Signature:** Must be `i32` based. `u64` is not supported by the current Judge.
+* **Fault Tolerance:** None. If a node dies, the aggregation hangs.
+* **Browser Security:** File Inputs must be read on user-gesture (Click), not change event.
