@@ -16,9 +16,4 @@ pub struct Shard {
     pub data_range_end: u64,
     pub wasm_image: String,
 }
-
-/// New: Tracks the partial progress of a sharded task
-pub struct ShardAggregation {
-    pub total_shards: u32,
-    pub results: Vec<i32>,
-}
+// ShardAggregation struct removed (handled by AppState in main.rs)
