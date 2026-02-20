@@ -27,12 +27,12 @@ The Gateway manages the Headless API and distributes the MapReduce workloads.
 cargo run -p swarm-node -- gateway
 
 API is active at http://localhost:3000/api/v1/jobs
-2. Start Workers (Shards)
+### 2. Start Workers (Shards)
 Run these on separate devices or in separate terminals to join the mesh.
 cargo run -p swarm-node -- start --shard 1
 cargo run -p swarm-node -- start --shard 2
 
-3. Deploy a Distributed Task
+### 3. Deploy a Distributed Task
 Submit a WebAssembly binary and a dataset via the REST API:
 curl -X POST http://localhost:3000/api/v1/jobs \
   -H "Content-Type: application/json" \
@@ -45,12 +45,14 @@ The Gateway will immediately return a job_id (e.g., d2062ac9...).
 Poll the task to watch the Swarm aggregate the results:
 curl http://localhost:3000/api/v1/jobs/<YOUR-JOB-ID>
 
-🛠️ Architecture
+### 🛠️ Architecture
 The Asynchronous MapReduce Pipeline
  * Submit: Client sends a dataset to the Gateway.
  * Map: Gateway slices the dataset into mathematically even chunks based on active mDNS peers and gossips them via Libp2p.
  * Process: Workers receive their specific shard, write the dataset into WebAssembly linear memory, and execute the sandbox.
  * Reduce (Poll): Gateway collects SHARD_RESULT broadcasts. The client polls the API, which returns HTTP 200 OK (Completed), HTTP 206 Partial Content (Timeout), or HTTP 202 Accepted (Pending).
+
+
 📜 Changelog
 All notable changes to this project will be documented in this section. The format is based on Keep a Changelog.
 [0.13.1] - 2026-02-20
