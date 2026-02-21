@@ -11,7 +11,7 @@ use axum::{
     http::StatusCode
 };
 use std::sync::Arc;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use dashmap::DashMap;
 use uuid::Uuid;
 use tokio::sync::Mutex;
@@ -46,6 +46,8 @@ pub struct JobState {
     pub expected_shards: usize,
     pub results: Vec<(u32, i32)>,
     pub created_at: Instant,
+    pub assignments: HashMap<u32, (String, Instant)>,
+    pub shards_data: HashMap<u32, Shard>,
 }
 
 pub struct AppState {
@@ -82,7 +84,7 @@ async fn main() -> Result<()> {
             
             let jobs = Arc::new(DashMap::new());
             let stats = Arc::new(Mutex::new(SwarmStatus { 
-                version: "0.13.1".to_string(), role: "GATEWAY".to_string(), peers_count: 0, peers: HashSet::new(),
+                version: "0.14.0".to_string(), role: "GATEWAY".to_string(), peers_count: 0, peers: HashSet::new(),
             }));
             let health_registry = Arc::new(DashMap::new());
             let pending_dials = Arc::new(DashMap::<libp2p::PeerId, Instant>::new());
@@ -94,8 +96,52 @@ async fn main() -> Result<()> {
             let (jobs_c, stat_c, health_c, pending_c) = (jobs.clone(), stats.clone(), health_registry.clone(), pending_dials.clone());
             
             tokio::spawn(async move {
+                let mut sla_interval = tokio::time::interval(Duration::from_secs(3));
                 loop {
                     tokio::select! {
+                        _ = sla_interval.tick() => {
+                            let mut re_routes = Vec::new();
+                            for entry in jobs_c.iter_mut() {
+                                let mut job = entry.value().lock().await;
+                                for shard_idx in 0..(job.expected_shards as u32) {
+                                    if job.results.iter().any(|(s, _)| *s == shard_idx) { continue; }
+                                    
+                                    let mut needs_reroute = false;
+                                    let mut exclude_peer = String::new();
+
+                                    if let Some((worker_id, start_time)) = job.assignments.get(&shard_idx) {
+                                        if start_time.elapsed() > Duration::from_secs(15) {
+                                            println!("⏰ SLA Timeout: Shard {} on worker {}. Re-routing...", shard_idx, worker_id);
+                                            needs_reroute = true;
+                                            exclude_peer = worker_id.clone();
+                                        }
+                                    } else if job.created_at.elapsed() > Duration::from_secs(15) {
+                                        println!("⏰ SLA Timeout: Shard {} was never acknowledged. Re-routing...", shard_idx);
+                                        needs_reroute = true;
+                                    }
+
+                                    if needs_reroute {
+                                        if let Some(shard_data) = job.shards_data.get(&shard_idx) {
+                                            let mut new_shard = shard_data.clone();
+                                            let s = stat_c.lock().await;
+                                            
+                                            // STRICT EXCLUSION: Find a peer that is NOT the timed-out worker
+                                            let idle_peer = s.peers.iter()
+                                                .map(|p| p.to_string())
+                                                .find(|p| p != &exclude_peer);
+
+                                            new_shard.target_peer = idle_peer.clone();
+                                            job.assignments.insert(shard_idx, (idle_peer.unwrap_or_else(|| "unassigned".to_string()), Instant::now()));
+                                            re_routes.push(new_shard);
+                                        }
+                                    }
+                                }
+                            }
+                            for shard in re_routes {
+                                let payload = format!("SHARD:{}", serde_json::to_string(&shard).unwrap());
+                                let _ = p2p_node.publish_to_topic("swarm-shard-1", payload);
+                            }
+                        },
                         Some(cmd) = rx.recv() => { let _ = p2p_node.publish_to_topic("swarm-shard-1", cmd); },
                         event = p2p_node.swarm.select_next_some() => {
                             match event {
@@ -107,7 +153,6 @@ async fn main() -> Result<()> {
                                                 if last.elapsed() < Duration::from_secs(5) { continue; }
                                             }
                                             pending_c.insert(peer_id, Instant::now());
-                                            println!("🔍 Gateway (Leader): Dialing {}...", peer_id);
                                             p2p_node.swarm.behaviour_mut().kademlia.add_address(&peer_id, multiaddr.clone());
                                             let _ = p2p_node.swarm.dial(multiaddr);
                                         }
@@ -118,7 +163,19 @@ async fn main() -> Result<()> {
                                 },
                                 SwarmEvent::Behaviour(SynapseBehaviorEvent::Gossipsub(gossipsub::Event::Message { message, .. })) => {
                                     let text = String::from_utf8_lossy(&message.data);
-                                    if text.starts_with("SHARD_RESULT:") {
+                                    if text.starts_with("SHARD_ACK:") {
+                                        let parts: Vec<&str> = text.split(':').collect();
+                                        if parts.len() >= 4 {
+                                            if let (Ok(tid), Ok(s_idx)) = (Uuid::parse_str(parts[1]), parts[2].parse::<u32>()) {
+                                                let worker_id = parts[3].to_string();
+                                                if let Some(job_ref) = jobs_c.get(&tid) {
+                                                    let mut guard = job_ref.value().lock().await;
+                                                    guard.assignments.insert(s_idx, (worker_id.clone(), Instant::now()));
+                                                    println!("🤝 SHARD_ACK: Worker {} claimed Shard {}", worker_id, s_idx);
+                                                }
+                                            }
+                                        }
+                                    } else if text.starts_with("SHARD_RESULT:") {
                                         if let Some(source) = message.source { health_c.remove(&source); }
                                         let parts: Vec<&str> = text.split(':').collect();
                                         if parts.len() >= 4 {
@@ -128,6 +185,8 @@ async fn main() -> Result<()> {
                                                     if !guard.results.iter().any(|(s, _)| *s == s_idx) {
                                                         guard.results.push((s_idx, val));
                                                         println!("📝 Accepted Result: Shard {} = {}", s_idx, val);
+                                                    } else {
+                                                        println!("⚠️ Dropped Zombie Result: Shard {} = {}", s_idx, val);
                                                     }
                                                 }
                                             }
@@ -187,7 +246,6 @@ async fn main() -> Result<()> {
                                             if last.elapsed() < Duration::from_secs(5) { continue; }
                                         }
                                         pending_c.insert(peer_id, Instant::now());
-                                        println!("🔍 Worker (Leader): Dialing {}...", peer_id);
                                         p2p_node.swarm.behaviour_mut().kademlia.add_address(&peer_id, multiaddr.clone());
                                         let _ = p2p_node.swarm.dial(multiaddr);
                                     }
@@ -200,8 +258,15 @@ async fn main() -> Result<()> {
                                 let text = String::from_utf8_lossy(&message.data);
                                 if text.starts_with("SHARD:") {
                                     if let Ok(shard_data) = serde_json::from_str::<Shard>(&text[6..]) {
-                                        // ROUTING FIX: Only compute if the shard index matches my local shard ID
-                                        if shard_data.shard_index == (shard_id as u32 - 1) {
+                                        let my_id_str = local_peer_id.to_string();
+                                        let is_targeted = shard_data.target_peer.as_deref() == Some(my_id_str.as_str());
+                                        let is_default = shard_data.target_peer.is_none() && shard_data.shard_index == (shard_id as u32 - 1);
+
+                                        if is_targeted || is_default {
+                                            println!("🤝 Claiming Shard {} (Targeted: {})", shard_data.shard_index, is_targeted);
+                                            let ack_payload = format!("SHARD_ACK:{}:{}:{}", shard_data.parent_task_id, shard_data.shard_index, my_id_str);
+                                            let _ = p2p_node.publish_to_topic("swarm-shard-1", ack_payload);
+
                                             if let Ok(wasm) = general_purpose::STANDARD.decode(&shard_data.wasm_image) {
                                                 println!("⚙️ Executing Shard {}: Processing {} items...", shard_data.shard_index, shard_data.data.len());
                                                 
@@ -244,26 +309,31 @@ async fn submit_job(State(state): State<Arc<AppState>>, Json(payload): Json<Shar
     
     let peer_count = active_peers.len().max(1); 
     let dataset = payload.dataset;
-    
-    let job_state = JobState {
-        expected_shards: peer_count,
-        results: Vec::new(),
-        created_at: Instant::now(),
-    };
-    state.jobs.insert(task_id, Arc::new(Mutex::new(job_state)));
-    
     let chunk_size = (dataset.len() as f64 / peer_count as f64).ceil() as usize;
     
+    let mut shards_data = HashMap::new();
+
     for (i, chunk) in dataset.chunks(chunk_size).enumerate() {
         let shard = Shard { 
             parent_task_id: task_id, 
             shard_index: i as u32, 
             total_shards: peer_count as u32, 
             data: chunk.to_vec(), 
-            wasm_image: payload.wasm_base64.clone() 
+            wasm_image: payload.wasm_base64.clone(),
+            target_peer: None,
         };
+        shards_data.insert(i as u32, shard.clone());
         let _ = state.node_tx.send(format!("SHARD:{}", serde_json::to_string(&shard).unwrap()));
     }
+
+    let job_state = JobState {
+        expected_shards: peer_count,
+        results: Vec::new(),
+        created_at: Instant::now(),
+        assignments: HashMap::new(),
+        shards_data,
+    };
+    state.jobs.insert(task_id, Arc::new(Mutex::new(job_state)));
 
     println!("📥 Job Submitted: {} with {} items", task_id, dataset.len());
     
@@ -277,8 +347,7 @@ async fn get_job_status(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>
     if let Some(job_ref) = state.jobs.get(&id) {
         let guard = job_ref.lock().await;
         let is_complete = guard.results.len() >= guard.expected_shards;
-        let is_timeout = guard.created_at.elapsed() > Duration::from_secs(5);
-
+        
         let sum: i32 = guard.results.iter().map(|(_, val)| val).sum();
         let received_indices: Vec<u32> = guard.results.iter().map(|(idx, _)| *idx).collect();
         let missing_indices: Vec<u32> = (0..guard.expected_shards as u32).filter(|i| !received_indices.contains(i)).collect();
@@ -290,16 +359,9 @@ async fn get_job_status(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>
                 breakdown: guard.results.clone(),
                 missing_shards: vec![]
             }))
-        } else if is_timeout {
+        } else {
             (StatusCode::PARTIAL_CONTENT, Json(JobStatusResponse {
                 status: "partial".to_string(),
-                total_sum: sum,
-                breakdown: guard.results.clone(),
-                missing_shards: missing_indices
-            }))
-        } else {
-            (StatusCode::OK, Json(JobStatusResponse {
-                status: "pending".to_string(),
                 total_sum: sum,
                 breakdown: guard.results.clone(),
                 missing_shards: missing_indices
@@ -316,5 +378,5 @@ async fn get_job_status(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>
 }
 
 async fn dashboard(State(_state): State<Arc<AppState>>) -> Html<String> {
-    Html("<h1>Please use API endpoints for v0.13.1</h1>".to_string())
+    Html("<h1>Please use API endpoints for v0.14.0</h1>".to_string())
 }
