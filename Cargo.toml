@@ -5,6 +5,6 @@ members = [
     "components/judge",
     "components/lazarus",
     "components/swarm-node"
-, "temp_wat_compiler"]
+]
 # Removed "examples/shard-worker" from this list!
 resolver = "2"
