@@ -84,7 +84,7 @@ async fn main() -> Result<()> {
             
             let jobs = Arc::new(DashMap::new());
             let stats = Arc::new(Mutex::new(SwarmStatus { 
-                version: "0.14.0".to_string(), role: "GATEWAY".to_string(), peers_count: 0, peers: HashSet::new(),
+                version: "0.14.1".to_string(), role: "GATEWAY".to_string(), peers_count: 0, peers: HashSet::new(),
             }));
             let health_registry = Arc::new(DashMap::new());
             let pending_dials = Arc::new(DashMap::<libp2p::PeerId, Instant>::new());
@@ -101,8 +101,21 @@ async fn main() -> Result<()> {
                     tokio::select! {
                         _ = sla_interval.tick() => {
                             let mut re_routes = Vec::new();
+                            let mut jobs_to_prune = Vec::new();
+
                             for entry in jobs_c.iter_mut() {
                                 let mut job = entry.value().lock().await;
+                                let job_id = *entry.key();
+                                let is_complete = job.results.len() >= job.expected_shards;
+
+                                // Garbage Collection Check (5 minutes TTL)
+                                if is_complete {
+                                    if job.created_at.elapsed() > Duration::from_secs(300) {
+                                        jobs_to_prune.push(job_id);
+                                    }
+                                    continue;
+                                }
+
                                 for shard_idx in 0..(job.expected_shards as u32) {
                                     if job.results.iter().any(|(s, _)| *s == shard_idx) { continue; }
                                     
@@ -125,7 +138,6 @@ async fn main() -> Result<()> {
                                             let mut new_shard = shard_data.clone();
                                             let s = stat_c.lock().await;
                                             
-                                            // STRICT EXCLUSION: Find a peer that is NOT the timed-out worker
                                             let idle_peer = s.peers.iter()
                                                 .map(|p| p.to_string())
                                                 .find(|p| p != &exclude_peer);
@@ -137,6 +149,12 @@ async fn main() -> Result<()> {
                                     }
                                 }
                             }
+
+                            for id in jobs_to_prune {
+                                jobs_c.remove(&id);
+                                println!("🧹 GC: Pruned completed job {} from memory to prevent leaks.", id);
+                            }
+
                             for shard in re_routes {
                                 let payload = format!("SHARD:{}", serde_json::to_string(&shard).unwrap());
                                 let _ = p2p_node.publish_to_topic("swarm-shard-1", payload);
@@ -378,5 +396,16 @@ async fn get_job_status(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>
 }
 
 async fn dashboard(State(_state): State<Arc<AppState>>) -> Html<String> {
-    Html("<h1>Please use API endpoints for v0.14.0</h1>".to_string())
+    Html(r#"
+        <div style="font-family: sans-serif; padding: 2rem;">
+            <h1>🐝 Swarm Runtime Gateway</h1>
+            <p><strong>Version:</strong> v0.14.1 (Fault Tolerance & GC)</p>
+            <hr>
+            <h3>Available API Endpoints:</h3>
+            <ul>
+                <li><strong>POST</strong> <code>/api/v1/jobs</code> - Submit a new Wasm job</li>
+                <li><strong>GET</strong> <code>/api/v1/jobs/:id</code> - Check job status and results</li>
+            </ul>
+        </div>
+    "#.to_string())
 }
