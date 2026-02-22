@@ -447,6 +447,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
+name = "cbor4ii"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "472931dd4dfcc785075b09be910147f9c6258883fc4591d0dac6116392b2daa6"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1791,6 +1800,7 @@ name = "lazarus"
 version = "0.8.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "log",
  "tokio",
 ]
@@ -1843,10 +1853,10 @@ dependencies = [
  "libp2p-metrics",
  "libp2p-noise",
  "libp2p-quic",
+ "libp2p-request-response",
  "libp2p-swarm",
  "libp2p-tcp",
  "libp2p-upnp",
- "libp2p-websocket",
  "libp2p-yamux",
  "multiaddr",
  "pin-project",
@@ -2113,6 +2123,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "libp2p-request-response"
+version = "0.26.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c314fe28368da5e3a262553fb0ad575c1c8934c461e10de10265551478163836"
+dependencies = [
+ "async-trait",
+ "cbor4ii",
+ "futures",
+ "futures-bounded",
+ "futures-timer",
+ "instant",
+ "libp2p-core",
+ "libp2p-identity",
+ "libp2p-swarm",
+ "rand 0.8.5",
+ "serde",
+ "smallvec",
+ "tracing",
+ "void",
+]
+
+[[package]]
 name = "libp2p-swarm"
 version = "0.44.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2198,27 +2230,6 @@ dependencies = [
  "tokio",
  "tracing",
  "void",
-]
-
-[[package]]
-name = "libp2p-websocket"
-version = "0.43.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85b953b6803a1f3161a989538974d72511c4e48a4af355337b6fb90723c56c05"
-dependencies = [
- "either",
- "futures",
- "futures-rustls",
- "libp2p-core",
- "libp2p-identity",
- "parking_lot 0.12.5",
- "pin-project-lite",
- "rw-stream-sink",
- "soketto",
- "thiserror 1.0.69",
- "tracing",
- "url",
- "webpki-roots",
 ]
 
 [[package]]
@@ -3456,17 +3467,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sha1"
-version = "0.10.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
-dependencies = [
- "cfg-if",
- "cpufeatures",
- "digest",
-]
-
-[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3590,21 +3590,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "soketto"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e859df029d160cb88608f5d7df7fb4753fd20fdfb4de5644f3d8b8440841721"
-dependencies = [
- "base64 0.22.1",
- "bytes",
- "futures",
- "httparse",
- "log",
- "rand 0.8.5",
- "sha1",
-]
-
-[[package]]
 name = "spin"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3690,13 +3675,10 @@ dependencies = [
 
 [[package]]
 name = "synapse"
-version = "0.13.0"
+version = "0.15.0"
 dependencies = [
  "anyhow",
- "futures",
  "libp2p",
- "log",
- "rand 0.8.5",
  "serde",
  "serde_json",
  "tokio",
@@ -4371,12 +4353,6 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
 ]
-
-[[package]]
-name = "webpki-roots"
-version = "0.25.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f20c57d8d7db6d3b86154206ae5d8fba62dd39573114de97c2cb0578251f8e1"
 
 [[package]]
 name = "widestring"

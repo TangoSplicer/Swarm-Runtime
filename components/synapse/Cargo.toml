@@ -1,15 +1,11 @@
 [package]
 name = "synapse"
-version = "0.13.0"
+version = "0.15.0"
 edition = "2021"
 
 [dependencies]
-# Added "kad" and "identify" features
-libp2p = { version = "0.53.0", features = ["tcp", "dns", "websocket", "noise", "yamux", "gossipsub", "mdns", "kad", "identify", "macros", "tokio"] }
-tokio = { version = "1.28", features = ["full"] }
-futures = "0.3"
+libp2p = { version = "0.53", features = ["macros", "tokio", "tcp", "noise", "yamux", "gossipsub", "mdns", "kad", "identify", "request-response", "cbor"] }
+tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-log = "0.4"
 anyhow = "1.0"
-rand = "0.8"

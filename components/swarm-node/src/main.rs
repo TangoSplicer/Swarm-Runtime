@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::time::{Duration, Instant};
-use libp2p::{swarm::SwarmEvent, gossipsub, mdns, identify};
+use libp2p::{swarm::SwarmEvent, mdns, request_response};
 use futures::StreamExt;
 use axum::{
     extract::{State, Json, Path}, 
@@ -18,11 +18,11 @@ use tokio::sync::Mutex;
 use serde::Serialize;
 use base64::{engine::general_purpose, Engine as _};
 
-use synapse::{SynapseNode, SynapseBehaviorEvent};
+use synapse::{SynapseNode, SynapseBehaviorEvent, SwarmRequest, SwarmResponse};
 use judge::Judge;
 
 mod sharding;
-use sharding::{Shard, ShardedDeployRequest};
+use sharding::{Shard, ShardResult, ShardedDeployRequest};
 
 #[derive(Parser)]
 struct Cli {
@@ -46,12 +46,16 @@ pub struct JobState {
     pub expected_shards: usize,
     pub results: Vec<(u32, i32)>,
     pub created_at: Instant,
-    pub assignments: HashMap<u32, (String, Instant)>,
+    pub assignments: HashMap<u32, (libp2p::PeerId, Instant)>,
     pub shards_data: HashMap<u32, Shard>,
 }
 
+pub enum NodeCommand {
+    Unicast(libp2p::PeerId, SwarmRequest),
+}
+
 pub struct AppState {
-    pub node_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    pub node_tx: tokio::sync::mpsc::UnboundedSender<NodeCommand>,
     pub jobs: Arc<DashMap<Uuid, Arc<Mutex<JobState>>>>,
     pub stats: Arc<Mutex<SwarmStatus>>,
     pub health_registry: Arc<DashMap<libp2p::PeerId, u8>>,
@@ -79,18 +83,18 @@ async fn main() -> Result<()> {
         Commands::Gateway { port } => {
             let mut p2p_node = SynapseNode::new(4000).await?;
             let local_peer_id = *p2p_node.swarm.local_peer_id();
-            p2p_node.subscribe("swarm-shard-1")?; 
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            p2p_node.subscribe("swarm-control-plane")?; 
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<NodeCommand>();
             
             let jobs = Arc::new(DashMap::new());
             let stats = Arc::new(Mutex::new(SwarmStatus { 
-                version: "0.14.1".to_string(), role: "GATEWAY".to_string(), peers_count: 0, peers: HashSet::new(),
+                version: "0.15.0".to_string(), role: "GATEWAY".to_string(), peers_count: 0, peers: HashSet::new(),
             }));
             let health_registry = Arc::new(DashMap::new());
             let pending_dials = Arc::new(DashMap::<libp2p::PeerId, Instant>::new());
             
             let shared_state = Arc::new(AppState { 
-                node_tx: tx, jobs: jobs.clone(), stats: stats.clone(), 
+                node_tx: tx.clone(), jobs: jobs.clone(), stats: stats.clone(), 
                 health_registry: health_registry.clone(), pending_dials: pending_dials.clone()
             });
             let (jobs_c, stat_c, health_c, pending_c) = (jobs.clone(), stats.clone(), health_registry.clone(), pending_dials.clone());
@@ -108,11 +112,8 @@ async fn main() -> Result<()> {
                                 let job_id = *entry.key();
                                 let is_complete = job.results.len() >= job.expected_shards;
 
-                                // Garbage Collection Check (5 minutes TTL)
                                 if is_complete {
-                                    if job.created_at.elapsed() > Duration::from_secs(300) {
-                                        jobs_to_prune.push(job_id);
-                                    }
+                                    if job.created_at.elapsed() > Duration::from_secs(300) { jobs_to_prune.push(job_id); }
                                     continue;
                                 }
 
@@ -120,13 +121,13 @@ async fn main() -> Result<()> {
                                     if job.results.iter().any(|(s, _)| *s == shard_idx) { continue; }
                                     
                                     let mut needs_reroute = false;
-                                    let mut exclude_peer = String::new();
+                                    let mut exclude_peer = None;
 
                                     if let Some((worker_id, start_time)) = job.assignments.get(&shard_idx) {
                                         if start_time.elapsed() > Duration::from_secs(15) {
                                             println!("⏰ SLA Timeout: Shard {} on worker {}. Re-routing...", shard_idx, worker_id);
                                             needs_reroute = true;
-                                            exclude_peer = worker_id.clone();
+                                            exclude_peer = Some(*worker_id);
                                         }
                                     } else if job.created_at.elapsed() > Duration::from_secs(15) {
                                         println!("⏰ SLA Timeout: Shard {} was never acknowledged. Re-routing...", shard_idx);
@@ -134,17 +135,19 @@ async fn main() -> Result<()> {
                                     }
 
                                     if needs_reroute {
-                                        if let Some(shard_data) = job.shards_data.get(&shard_idx) {
-                                            let mut new_shard = shard_data.clone();
+                                        // Decoupled the immutable borrow from the job struct!
+                                        let shard_data_opt = job.shards_data.get(&shard_idx).cloned();
+                                        
+                                        if let Some(shard_data) = shard_data_opt {
                                             let s = stat_c.lock().await;
+                                            let idle_peer = s.peers.iter().find(|&&p| Some(p) != exclude_peer).copied();
                                             
-                                            let idle_peer = s.peers.iter()
-                                                .map(|p| p.to_string())
-                                                .find(|p| p != &exclude_peer);
-
-                                            new_shard.target_peer = idle_peer.clone();
-                                            job.assignments.insert(shard_idx, (idle_peer.unwrap_or_else(|| "unassigned".to_string()), Instant::now()));
-                                            re_routes.push(new_shard);
+                                            if let Some(peer) = idle_peer {
+                                                job.assignments.insert(shard_idx, (peer, Instant::now()));
+                                                re_routes.push((peer, shard_data));
+                                            } else {
+                                                println!("⚠️ No alternate peers available for re-route!");
+                                            }
                                         }
                                     }
                                 }
@@ -152,15 +155,19 @@ async fn main() -> Result<()> {
 
                             for id in jobs_to_prune {
                                 jobs_c.remove(&id);
-                                println!("🧹 GC: Pruned completed job {} from memory to prevent leaks.", id);
+                                println!("🧹 GC: Pruned completed job {}.", id);
                             }
 
-                            for shard in re_routes {
-                                let payload = format!("SHARD:{}", serde_json::to_string(&shard).unwrap());
-                                let _ = p2p_node.publish_to_topic("swarm-shard-1", payload);
+                            for (peer, shard) in re_routes {
+                                let req = SwarmRequest::DispatchShard(serde_json::to_string(&shard).unwrap());
+                                let _ = tx.send(NodeCommand::Unicast(peer, req));
                             }
                         },
-                        Some(cmd) = rx.recv() => { let _ = p2p_node.publish_to_topic("swarm-shard-1", cmd); },
+                        Some(cmd) = rx.recv() => { 
+                            match cmd {
+                                NodeCommand::Unicast(peer, req) => { let _ = p2p_node.send_request(&peer, req); }
+                            }
+                        },
                         event = p2p_node.swarm.select_next_some() => {
                             match event {
                                 SwarmEvent::Behaviour(SynapseBehaviorEvent::Mdns(mdns::Event::Discovered(list))) => {
@@ -176,38 +183,30 @@ async fn main() -> Result<()> {
                                         }
                                     }
                                 },
-                                SwarmEvent::Behaviour(SynapseBehaviorEvent::Identify(identify::Event::Received { peer_id, info })) => {
-                                    println!("🆔 IDENTIFY: Connected to {} ({})", peer_id, info.agent_version);
-                                },
-                                SwarmEvent::Behaviour(SynapseBehaviorEvent::Gossipsub(gossipsub::Event::Message { message, .. })) => {
-                                    let text = String::from_utf8_lossy(&message.data);
-                                    if text.starts_with("SHARD_ACK:") {
-                                        let parts: Vec<&str> = text.split(':').collect();
-                                        if parts.len() >= 4 {
-                                            if let (Ok(tid), Ok(s_idx)) = (Uuid::parse_str(parts[1]), parts[2].parse::<u32>()) {
-                                                let worker_id = parts[3].to_string();
-                                                if let Some(job_ref) = jobs_c.get(&tid) {
-                                                    let mut guard = job_ref.value().lock().await;
-                                                    guard.assignments.insert(s_idx, (worker_id.clone(), Instant::now()));
-                                                    println!("🤝 SHARD_ACK: Worker {} claimed Shard {}", worker_id, s_idx);
-                                                }
-                                            }
-                                        }
-                                    } else if text.starts_with("SHARD_RESULT:") {
-                                        if let Some(source) = message.source { health_c.remove(&source); }
-                                        let parts: Vec<&str> = text.split(':').collect();
-                                        if parts.len() >= 4 {
-                                            if let (Ok(tid), Ok(s_idx), Ok(val)) = (Uuid::parse_str(parts[1]), parts[2].parse::<u32>(), parts[3].parse::<i32>()) {
-                                                if let Some(job_ref) = jobs_c.get(&tid) { 
-                                                    let mut guard = job_ref.value().lock().await;
-                                                    if !guard.results.iter().any(|(s, _)| *s == s_idx) {
-                                                        guard.results.push((s_idx, val));
-                                                        println!("📝 Accepted Result: Shard {} = {}", s_idx, val);
-                                                    } else {
-                                                        println!("⚠️ Dropped Zombie Result: Shard {} = {}", s_idx, val);
+                                SwarmEvent::Behaviour(SynapseBehaviorEvent::ReqRes(request_response::Event::Message { peer, message })) => {
+                                    match message {
+                                        request_response::Message::Request { request, channel, .. } => {
+                                            if let SwarmRequest::SubmitResult(json_payload) = request {
+                                                // 1. Send Decoupled ACK instantly
+                                                p2p_node.send_response(channel, SwarmResponse::Ack);
+                                                
+                                                // 2. Process Result
+                                                if let Ok(res_data) = serde_json::from_str::<ShardResult>(&json_payload) {
+                                                    health_c.remove(&peer);
+                                                    if let Some(job_ref) = jobs_c.get(&res_data.job_id) { 
+                                                        let mut guard = job_ref.value().lock().await;
+                                                        if !guard.results.iter().any(|(s, _)| *s == res_data.shard_index) {
+                                                            guard.results.push((res_data.shard_index, res_data.result));
+                                                            println!("📝 Accepted Result: Shard {} = {}", res_data.shard_index, res_data.result);
+                                                        } else {
+                                                            println!("⚠️ Dropped Zombie Result: Shard {} = {}", res_data.shard_index, res_data.result);
+                                                        }
                                                     }
                                                 }
                                             }
+                                        },
+                                        request_response::Message::Response { .. } => {
+                                            // Worker ACKed our Dispatch request. SLA timer is already tracking them.
                                         }
                                     }
                                 },
@@ -246,14 +245,21 @@ async fn main() -> Result<()> {
             let port = 4000 + shard_id as u16;
             let mut p2p_node = SynapseNode::new(port).await?;
             let local_peer_id = *p2p_node.swarm.local_peer_id();
-            p2p_node.subscribe("swarm-shard-1")?;
+            p2p_node.subscribe("swarm-control-plane")?;
             println!("=== Worker Live (Shard {}) on Port {} ===", shard_id, port);
             
             let pending_dials = Arc::new(DashMap::<libp2p::PeerId, Instant>::new());
             let pending_c = pending_dials.clone();
+            
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<NodeCommand>();
 
             loop {
                 tokio::select! {
+                    Some(cmd) = rx.recv() => {
+                        match cmd {
+                            NodeCommand::Unicast(peer, req) => { let _ = p2p_node.send_request(&peer, req); }
+                        }
+                    },
                     event = p2p_node.swarm.select_next_some() => {
                         match event {
                             SwarmEvent::Behaviour(SynapseBehaviorEvent::Mdns(mdns::Event::Discovered(list))) => {
@@ -269,35 +275,46 @@ async fn main() -> Result<()> {
                                     }
                                 }
                             },
-                            SwarmEvent::Behaviour(SynapseBehaviorEvent::Identify(identify::Event::Received { peer_id, info })) => {
-                                println!("🆔 IDENTIFY: Connected to {} ({})", peer_id, info.agent_version);
-                            },
-                            SwarmEvent::Behaviour(SynapseBehaviorEvent::Gossipsub(gossipsub::Event::Message { message, .. })) => {
-                                let text = String::from_utf8_lossy(&message.data);
-                                if text.starts_with("SHARD:") {
-                                    if let Ok(shard_data) = serde_json::from_str::<Shard>(&text[6..]) {
-                                        let my_id_str = local_peer_id.to_string();
-                                        let is_targeted = shard_data.target_peer.as_deref() == Some(my_id_str.as_str());
-                                        let is_default = shard_data.target_peer.is_none() && shard_data.shard_index == (shard_id as u32 - 1);
-
-                                        if is_targeted || is_default {
-                                            println!("🤝 Claiming Shard {} (Targeted: {})", shard_data.shard_index, is_targeted);
-                                            let ack_payload = format!("SHARD_ACK:{}:{}:{}", shard_data.parent_task_id, shard_data.shard_index, my_id_str);
-                                            let _ = p2p_node.publish_to_topic("swarm-shard-1", ack_payload);
-
-                                            if let Ok(wasm) = general_purpose::STANDARD.decode(&shard_data.wasm_image) {
-                                                println!("⚙️ Executing Shard {}: Processing {} items...", shard_data.shard_index, shard_data.data.len());
+                            SwarmEvent::Behaviour(SynapseBehaviorEvent::ReqRes(request_response::Event::Message { peer, message })) => {
+                                match message {
+                                    request_response::Message::Request { request, channel, .. } => {
+                                        if let SwarmRequest::DispatchShard(json_payload) = request {
+                                            // 1. Instantly ACK to free up the TCP stream
+                                            p2p_node.send_response(channel, SwarmResponse::Ack);
+                                            
+                                            // 2. Offload execution to a background task
+                                            if let Ok(shard_data) = serde_json::from_str::<Shard>(&json_payload) {
+                                                println!("🤝 Unicast Received: Claiming Shard {}", shard_data.shard_index);
                                                 
-                                                let mut judge = Judge::new(None).unwrap();
-                                                let res = match judge.execute(&wasm, &shard_data.data) {
-                                                    Ok(val) => val,
-                                                    Err(e) => { println!("❌ Wasm Error: {}", e); -1 }
-                                                };
+                                                let worker_tx = tx.clone();
+                                                let gateway_id = peer;
                                                 
-                                                println!("✅ Result: {}", res);
-                                                let _ = p2p_node.publish_to_topic("swarm-shard-1", format!("SHARD_RESULT:{}:{}:{}", shard_data.parent_task_id, shard_data.shard_index, res));
+                                                tokio::spawn(async move {
+                                                    if let Ok(wasm) = general_purpose::STANDARD.decode(&shard_data.wasm_image) {
+                                                        println!("⚙️ Executing Shard {}: Processing {} items...", shard_data.shard_index, shard_data.data.len());
+                                                        
+                                                        let mut judge = Judge::new(None).unwrap();
+                                                        let res = match judge.execute(&wasm, &shard_data.data) {
+                                                            Ok(val) => val,
+                                                            Err(e) => { println!("❌ Wasm Error: {}", e); -1 }
+                                                        };
+                                                        
+                                                        println!("✅ Result: {}", res);
+                                                        
+                                                        let result_obj = ShardResult {
+                                                            job_id: shard_data.parent_task_id,
+                                                            shard_index: shard_data.shard_index,
+                                                            result: res,
+                                                        };
+                                                        let req = SwarmRequest::SubmitResult(serde_json::to_string(&result_obj).unwrap());
+                                                        let _ = worker_tx.send(NodeCommand::Unicast(gateway_id, req));
+                                                    }
+                                                });
                                             }
                                         }
+                                    },
+                                    request_response::Message::Response { .. } => {
+                                        // Gateway ACKed our Result. We are done!
                                     }
                                 }
                             },
@@ -320,8 +337,8 @@ async fn main() -> Result<()> {
 
 async fn submit_job(State(state): State<Arc<AppState>>, Json(payload): Json<ShardedDeployRequest>) -> (StatusCode, Json<JobSubmitResponse>) {
     let task_id = Uuid::new_v4();
-    let all_peers = state.stats.lock().await.peers.clone();
-    let active_peers: Vec<_> = all_peers.iter()
+    let all_peers: Vec<_> = state.stats.lock().await.peers.iter().copied().collect();
+    let active_peers: Vec<_> = all_peers.into_iter()
         .filter(|p| *state.health_registry.get(p).as_deref().unwrap_or(&0) < 2)
         .collect();
     
@@ -330,25 +347,34 @@ async fn submit_job(State(state): State<Arc<AppState>>, Json(payload): Json<Shar
     let chunk_size = (dataset.len() as f64 / peer_count as f64).ceil() as usize;
     
     let mut shards_data = HashMap::new();
+    let mut assignments = HashMap::new();
 
     for (i, chunk) in dataset.chunks(chunk_size).enumerate() {
+        let target_peer = active_peers.get(i % active_peers.len()).copied();
+        
         let shard = Shard { 
             parent_task_id: task_id, 
             shard_index: i as u32, 
             total_shards: peer_count as u32, 
             data: chunk.to_vec(), 
             wasm_image: payload.wasm_base64.clone(),
-            target_peer: None,
+            target_peer: target_peer.map(|p| p.to_string()),
         };
+        
         shards_data.insert(i as u32, shard.clone());
-        let _ = state.node_tx.send(format!("SHARD:{}", serde_json::to_string(&shard).unwrap()));
+        
+        if let Some(peer) = target_peer {
+            assignments.insert(i as u32, (peer, Instant::now()));
+            let req = SwarmRequest::DispatchShard(serde_json::to_string(&shard).unwrap());
+            let _ = state.node_tx.send(NodeCommand::Unicast(peer, req));
+        }
     }
 
     let job_state = JobState {
         expected_shards: peer_count,
         results: Vec::new(),
         created_at: Instant::now(),
-        assignments: HashMap::new(),
+        assignments,
         shards_data,
     };
     state.jobs.insert(task_id, Arc::new(Mutex::new(job_state)));
@@ -399,7 +425,7 @@ async fn dashboard(State(_state): State<Arc<AppState>>) -> Html<String> {
     Html(r#"
         <div style="font-family: sans-serif; padding: 2rem;">
             <h1>🐝 Swarm Runtime Gateway</h1>
-            <p><strong>Version:</strong> v0.14.1 (Fault Tolerance & GC)</p>
+            <p><strong>Version:</strong> v0.15.0 (Unicast Data Plane)</p>
             <hr>
             <h3>Available API Endpoints:</h3>
             <ul>

@@ -16,3 +16,10 @@ pub struct Shard {
     pub wasm_image: String,
     pub target_peer: Option<String>,
 }
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ShardResult {
+    pub job_id: Uuid,
+    pub shard_index: u32,
+    pub result: i32,
+}
