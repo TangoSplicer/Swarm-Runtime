@@ -24,10 +24,17 @@ pub struct ShardResult {
     pub result: i32,
 }
 
-/// NEW: The Cryptographic Envelope for Unicast Payloads
 #[derive(Serialize, Deserialize, Clone)]
 pub struct SignedPayload {
-    pub payload_json: String, // The serialized Shard
-    pub expires_at: u64,      // Unix timestamp for replay protection
-    pub signature: Vec<u8>,   // Ed25519 signature bytes
+    pub payload_json: String, 
+    pub expires_at: u64,      
+    pub signature: Vec<u8>,   
+}
+
+/// NEW: Hardware Telemetry Envelope for the Control Plane
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Telemetry {
+    pub peer_id: String,
+    pub cpu_usage: f32,    // Percentage 0.0 to 100.0
+    pub free_ram_mb: u64,  // Available memory in Megabytes
 }
