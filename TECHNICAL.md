@@ -1,23 +1,22 @@
 # Swarm-Runtime: Technical Documentation
 
-## The Sandbox Bridge (Judge)
-The `Judge` component acts as the execution supervisor. It uses the `Wasmer` runtime but restricts the module's capabilities. 
+## The Decoupled Network Brain (Synapse)
+The networking layer has evolved from a noisy broadcast mesh into a highly efficient dual-plane architecture:
 
-### Host Functions (The ABI)
-Wasm modules are memory-isolated. To allow data persistence, we export the following symbols from the Rust host to the Wasm environment:
-- `fn db_set(key: i32, val: i32)`: Writes a 4-byte integer to the local `sled` partition.
-- `fn db_get(key: i32) -> i32`: Retrieves a 4-byte integer from the local partition.
+1. **The Control Plane (GossipSub):** Lightweight mesh-wide state. Workers broadcast `TEL:` heartbeats containing system load.
+2. **The Data Plane (Request-Response):** Direct point-to-point TCP streams. Transmits megabytes of Wasm data to specific nodes without saturating the mobile network. Employs a "Decoupled ACK" strategy to prevent TCP Half-Open timeouts during long Wasm executions.
 
-## The Network Brain (Synapse)
-The networking layer uses a "Gossip-then-Execute" pattern.
-1. **Gateway** receives a Wasm payload via the Axum HTTP interface.
-2. It publishes a `TASK:[ID]:[BASE64]` message to the GossipSub topic `swarm-shard-X`.
-3. **Workers** subscribed to that shard download, decode, and execute the task.
-4. **Results** are published back to the mesh and intercepted by the Gateway via a `oneshot` channel to close the HTTP request loop.
+## The Mobile-Aware Scheduler
+To prevent dying phones from bottlenecking the distributed mesh, the Gateway employs Lazy Assignment and Weighted Sharding. 
 
-## Platform Compatibility
-The core dependencies are purely Rust-based:
-- **Networking:** `libp2p` (Standard cross-platform).
-- **Storage:** `sled` (Pure Rust).
-- **Runtime:** `Wasmer` (Native C/Rust).
-This architecture is designed to compile on any OS supported by Rust.
+### The Allocation Math
+When telemetry arrives, the Gateway calculates a Fitness Score for each active node:
+`Fitness = free_ram_mb / (cpu_load + 1.0)`
+
+The dataset is divided proportionally based on these weights using `floor()` math. To prevent data loss from floating-point truncation, the scheduler enforces a `minimum_chunk_size` of `1` and applies a remainder sweep to the final node in the active peer list.
+
+## Cryptographic Security Layer
+All Unicast payloads are wrapped in a `SignedPayload` envelope.
+- **Root of Trust:** Gateway holds an `Ed25519` private key. Workers hold the public key.
+- **Replay Protection:** Payloads include an `expires_at` Unix timestamp (60-second TTL).
+- **Ban Hammer:** If a worker receives an invalid signature, malformed envelope, or expired TTL, it actively invokes `disconnect_peer_id` to ban the malicious actor from the mesh.

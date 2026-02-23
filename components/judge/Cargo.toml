@@ -7,3 +7,5 @@ edition = "2021"
 anyhow = "1.0"
 wasmer = "4.2" # The Wasm Engine
 sled = "0.34"
+wasmer-middlewares = "=4.2.2"
+wasmer-compiler-singlepass = "=4.2.2"
