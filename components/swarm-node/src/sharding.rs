@@ -23,3 +23,11 @@ pub struct ShardResult {
     pub shard_index: u32,
     pub result: i32,
 }
+
+/// NEW: The Cryptographic Envelope for Unicast Payloads
+#[derive(Serialize, Deserialize, Clone)]
+pub struct SignedPayload {
+    pub payload_json: String, // The serialized Shard
+    pub expires_at: u64,      // Unix timestamp for replay protection
+    pub signature: Vec<u8>,   // Ed25519 signature bytes
+}

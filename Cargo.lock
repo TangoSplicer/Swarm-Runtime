@@ -3631,13 +3631,14 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "swarm-node"
-version = "0.13.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "axum",
  "base64 0.21.7",
  "clap",
  "dashmap",
+ "ed25519-dalek",
  "env_logger",
  "futures",
  "judge",

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use libp2p::{swarm::SwarmEvent, mdns, request_response};
 use futures::StreamExt;
 use axum::{
@@ -18,11 +18,20 @@ use tokio::sync::Mutex;
 use serde::Serialize;
 use base64::{engine::general_purpose, Engine as _};
 
+// Cryptography Imports
+use ed25519_dalek::{SigningKey, VerifyingKey, Signer, Verifier, Signature};
+
 use synapse::{SynapseNode, SynapseBehaviorEvent, SwarmRequest, SwarmResponse};
 use judge::Judge;
 
 mod sharding;
-use sharding::{Shard, ShardResult, ShardedDeployRequest};
+use sharding::{Shard, ShardResult, ShardedDeployRequest, SignedPayload};
+
+// STATIC ROOT OF TRUST (Hardcoded for Termux prototyping)
+const GATEWAY_SECRET_SEED: [u8; 32] = [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+    17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32
+];
 
 #[derive(Parser)]
 struct Cli {
@@ -52,6 +61,7 @@ pub struct JobState {
 
 pub enum NodeCommand {
     Unicast(libp2p::PeerId, SwarmRequest),
+    Disconnect(libp2p::PeerId),
 }
 
 pub struct AppState {
@@ -60,6 +70,7 @@ pub struct AppState {
     pub stats: Arc<Mutex<SwarmStatus>>,
     pub health_registry: Arc<DashMap<libp2p::PeerId, u8>>,
     pub pending_dials: Arc<DashMap<libp2p::PeerId, Instant>>,
+    pub signing_key: SigningKey,
 }
 
 #[derive(Serialize)]
@@ -79,6 +90,11 @@ struct JobStatusResponse {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    
+    // Initialize Cryptography
+    let signing_key = SigningKey::from_bytes(&GATEWAY_SECRET_SEED);
+    let verifying_key = VerifyingKey::from(&signing_key);
+    
     match cli.command {
         Commands::Gateway { port } => {
             let mut p2p_node = SynapseNode::new(4000).await?;
@@ -88,14 +104,15 @@ async fn main() -> Result<()> {
             
             let jobs = Arc::new(DashMap::new());
             let stats = Arc::new(Mutex::new(SwarmStatus { 
-                version: "0.15.0".to_string(), role: "GATEWAY".to_string(), peers_count: 0, peers: HashSet::new(),
+                version: "0.16.0".to_string(), role: "GATEWAY".to_string(), peers_count: 0, peers: HashSet::new(),
             }));
             let health_registry = Arc::new(DashMap::new());
             let pending_dials = Arc::new(DashMap::<libp2p::PeerId, Instant>::new());
             
             let shared_state = Arc::new(AppState { 
                 node_tx: tx.clone(), jobs: jobs.clone(), stats: stats.clone(), 
-                health_registry: health_registry.clone(), pending_dials: pending_dials.clone()
+                health_registry: health_registry.clone(), pending_dials: pending_dials.clone(),
+                signing_key: signing_key.clone(),
             });
             let (jobs_c, stat_c, health_c, pending_c) = (jobs.clone(), stats.clone(), health_registry.clone(), pending_dials.clone());
             
@@ -135,7 +152,6 @@ async fn main() -> Result<()> {
                                     }
 
                                     if needs_reroute {
-                                        // Decoupled the immutable borrow from the job struct!
                                         let shard_data_opt = job.shards_data.get(&shard_idx).cloned();
                                         
                                         if let Some(shard_data) = shard_data_opt {
@@ -159,13 +175,26 @@ async fn main() -> Result<()> {
                             }
 
                             for (peer, shard) in re_routes {
-                                let req = SwarmRequest::DispatchShard(serde_json::to_string(&shard).unwrap());
+                                // SECURE RE-ROUTE: Sign the payload cleanly
+                                let payload_json = serde_json::to_string(&shard).unwrap();
+                                let expires_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 60;
+                                let message_to_sign = format!("{}:{}", payload_json, expires_at);
+                                let signature = signing_key.sign(message_to_sign.as_bytes());
+
+                                let signed_payload = SignedPayload {
+                                    payload_json,
+                                    expires_at,
+                                    signature: signature.to_bytes().to_vec(),
+                                };
+                                
+                                let req = SwarmRequest::DispatchShard(serde_json::to_string(&signed_payload).unwrap());
                                 let _ = tx.send(NodeCommand::Unicast(peer, req));
                             }
                         },
                         Some(cmd) = rx.recv() => { 
                             match cmd {
-                                NodeCommand::Unicast(peer, req) => { let _ = p2p_node.send_request(&peer, req); }
+                                NodeCommand::Unicast(peer, req) => { let _ = p2p_node.send_request(&peer, req); },
+                                NodeCommand::Disconnect(peer) => { let _ = p2p_node.swarm.disconnect_peer_id(peer); }
                             }
                         },
                         event = p2p_node.swarm.select_next_some() => {
@@ -187,10 +216,7 @@ async fn main() -> Result<()> {
                                     match message {
                                         request_response::Message::Request { request, channel, .. } => {
                                             if let SwarmRequest::SubmitResult(json_payload) = request {
-                                                // 1. Send Decoupled ACK instantly
                                                 p2p_node.send_response(channel, SwarmResponse::Ack);
-                                                
-                                                // 2. Process Result
                                                 if let Ok(res_data) = serde_json::from_str::<ShardResult>(&json_payload) {
                                                     health_c.remove(&peer);
                                                     if let Some(job_ref) = jobs_c.get(&res_data.job_id) { 
@@ -205,9 +231,7 @@ async fn main() -> Result<()> {
                                                 }
                                             }
                                         },
-                                        request_response::Message::Response { .. } => {
-                                            // Worker ACKed our Dispatch request. SLA timer is already tracking them.
-                                        }
+                                        _ => {}
                                     }
                                 },
                                 SwarmEvent::ConnectionEstablished { peer_id, .. } => {
@@ -257,7 +281,11 @@ async fn main() -> Result<()> {
                 tokio::select! {
                     Some(cmd) = rx.recv() => {
                         match cmd {
-                            NodeCommand::Unicast(peer, req) => { let _ = p2p_node.send_request(&peer, req); }
+                            NodeCommand::Unicast(peer, req) => { let _ = p2p_node.send_request(&peer, req); },
+                            NodeCommand::Disconnect(peer) => { 
+                                println!("⛔ BANNING PEER: {}", peer);
+                                let _ = p2p_node.swarm.disconnect_peer_id(peer); 
+                            }
                         }
                     },
                     event = p2p_node.swarm.select_next_some() => {
@@ -279,43 +307,71 @@ async fn main() -> Result<()> {
                                 match message {
                                     request_response::Message::Request { request, channel, .. } => {
                                         if let SwarmRequest::DispatchShard(json_payload) = request {
-                                            // 1. Instantly ACK to free up the TCP stream
                                             p2p_node.send_response(channel, SwarmResponse::Ack);
                                             
-                                            // 2. Offload execution to a background task
-                                            if let Ok(shard_data) = serde_json::from_str::<Shard>(&json_payload) {
-                                                println!("🤝 Unicast Received: Claiming Shard {}", shard_data.shard_index);
+                                            // SECURITY LAYER: Verify Envelope
+                                            if let Ok(envelope) = serde_json::from_str::<SignedPayload>(&json_payload) {
                                                 
-                                                let worker_tx = tx.clone();
-                                                let gateway_id = peer;
-                                                
-                                                tokio::spawn(async move {
-                                                    if let Ok(wasm) = general_purpose::STANDARD.decode(&shard_data.wasm_image) {
-                                                        println!("⚙️ Executing Shard {}: Processing {} items...", shard_data.shard_index, shard_data.data.len());
-                                                        
-                                                        let mut judge = Judge::new(None).unwrap();
-                                                        let res = match judge.execute(&wasm, &shard_data.data) {
-                                                            Ok(val) => val,
-                                                            Err(e) => { println!("❌ Wasm Error: {}", e); -1 }
-                                                        };
-                                                        
-                                                        println!("✅ Result: {}", res);
-                                                        
-                                                        let result_obj = ShardResult {
-                                                            job_id: shard_data.parent_task_id,
-                                                            shard_index: shard_data.shard_index,
-                                                            result: res,
-                                                        };
-                                                        let req = SwarmRequest::SubmitResult(serde_json::to_string(&result_obj).unwrap());
-                                                        let _ = worker_tx.send(NodeCommand::Unicast(gateway_id, req));
+                                                // 1. Time-to-Live (TTL) Check
+                                                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+                                                if now > envelope.expires_at {
+                                                    println!("🚨 REPLAY ATTACK DETECTED: Payload expired. Dropping.");
+                                                    let _ = tx.send(NodeCommand::Disconnect(peer));
+                                                    continue;
+                                                }
+
+                                                // 2. Cryptographic Signature Check
+                                                let message_to_verify = format!("{}:{}", envelope.payload_json, envelope.expires_at);
+                                                let sig_bytes: [u8; 64] = match envelope.signature.try_into() {
+                                                    Ok(b) => b,
+                                                    Err(_) => {
+                                                        println!("🚨 INVALID SIGNATURE LENGTH: Dropping connection.");
+                                                        let _ = tx.send(NodeCommand::Disconnect(peer));
+                                                        continue;
                                                     }
-                                                });
+                                                };
+                                                
+                                                let signature = Signature::from_bytes(&sig_bytes);
+                                                if verifying_key.verify(message_to_verify.as_bytes(), &signature).is_err() {
+                                                    println!("🚨 MALICIOUS PAYLOAD DETECTED: Invalid signature. Banning Peer.");
+                                                    let _ = tx.send(NodeCommand::Disconnect(peer));
+                                                    continue;
+                                                }
+
+                                                // SECURITY PASSED. Execute payload.
+                                                if let Ok(shard_data) = serde_json::from_str::<Shard>(&envelope.payload_json) {
+                                                    println!("🔒 Verified & Claiming Shard {}", shard_data.shard_index);
+                                                    
+                                                    let worker_tx = tx.clone();
+                                                    let gateway_id = peer;
+                                                    
+                                                    tokio::spawn(async move {
+                                                        if let Ok(wasm) = general_purpose::STANDARD.decode(&shard_data.wasm_image) {
+                                                            println!("⚙️ Executing Shard {}: Processing {} items...", shard_data.shard_index, shard_data.data.len());
+                                                            let mut judge = Judge::new(None).unwrap();
+                                                            let res = match judge.execute(&wasm, &shard_data.data) {
+                                                                Ok(val) => val,
+                                                                Err(e) => { println!("❌ Wasm Error: {}", e); -1 }
+                                                            };
+                                                            println!("✅ Result: {}", res);
+                                                            
+                                                            let result_obj = ShardResult {
+                                                                job_id: shard_data.parent_task_id,
+                                                                shard_index: shard_data.shard_index,
+                                                                result: res,
+                                                            };
+                                                            let req = SwarmRequest::SubmitResult(serde_json::to_string(&result_obj).unwrap());
+                                                            let _ = worker_tx.send(NodeCommand::Unicast(gateway_id, req));
+                                                        }
+                                                    });
+                                                }
+                                            } else {
+                                                println!("🚨 MALFORMED PAYLOAD: Unrecognized format. Dropping connection.");
+                                                let _ = tx.send(NodeCommand::Disconnect(peer));
                                             }
                                         }
                                     },
-                                    request_response::Message::Response { .. } => {
-                                        // Gateway ACKed our Result. We are done!
-                                    }
+                                    _ => {}
                                 }
                             },
                             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
@@ -365,7 +421,20 @@ async fn submit_job(State(state): State<Arc<AppState>>, Json(payload): Json<Shar
         
         if let Some(peer) = target_peer {
             assignments.insert(i as u32, (peer, Instant::now()));
-            let req = SwarmRequest::DispatchShard(serde_json::to_string(&shard).unwrap());
+            
+            // SECURE DISPATCH: Sign the payload cleanly
+            let payload_json = serde_json::to_string(&shard).unwrap();
+            let expires_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 60;
+            let message_to_sign = format!("{}:{}", payload_json, expires_at);
+            let signature = state.signing_key.sign(message_to_sign.as_bytes());
+
+            let signed_payload = SignedPayload {
+                payload_json,
+                expires_at,
+                signature: signature.to_bytes().to_vec(),
+            };
+
+            let req = SwarmRequest::DispatchShard(serde_json::to_string(&signed_payload).unwrap());
             let _ = state.node_tx.send(NodeCommand::Unicast(peer, req));
         }
     }
@@ -425,7 +494,7 @@ async fn dashboard(State(_state): State<Arc<AppState>>) -> Html<String> {
     Html(r#"
         <div style="font-family: sans-serif; padding: 2rem;">
             <h1>🐝 Swarm Runtime Gateway</h1>
-            <p><strong>Version:</strong> v0.15.0 (Unicast Data Plane)</p>
+            <p><strong>Version:</strong> v0.16.0 (Cryptographic Payload Security)</p>
             <hr>
             <h3>Available API Endpoints:</h3>
             <ul>

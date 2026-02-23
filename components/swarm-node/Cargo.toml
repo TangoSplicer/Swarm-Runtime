@@ -1,6 +1,6 @@
 [package]
 name = "swarm-node"
-version = "0.13.0"
+version = "0.16.0"
 edition = "2021"
 
 [dependencies]
@@ -27,3 +27,4 @@ axum = { version = "0.6", features = ["macros"] }
 # Internal Components
 synapse = { path = "../synapse" }
 judge = { path = "../judge" }
+ed25519-dalek = "2.2.0"
