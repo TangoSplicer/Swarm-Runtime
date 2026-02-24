@@ -3,30 +3,25 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.13.1] - 2026-02-20
+## [0.17.1] - 2026-02-24
 ### Added
-- Wasm linear memory byte injection inside `Judge` to pass dynamic datasets directly into the sandbox.
-### Fixed
-- "Greedy Worker" routing bug: Workers now strictly compute only their assigned `shard_index`.
-- Unused variable compiler warnings across the codebase.
+- Deterministic Consensus algorithm with Byzantine Fault Tolerance.
+- Redundancy Factor 2: Gateway assigns identical shards to multiple workers.
+- Strict result matching and active ban-hammer for malicious nodes reporting fake results.
+- Granular per-peer SLA tracking.
 
-## [0.13.0] - 2026-02-20
-### Changed
-- `ShardedDeployRequest` JSON payload upgraded to support dynamic integer arrays (`dataset`).
-- Gateway data routing engine mathematically slices arrays based on the active peer count.
-
-## [0.12.0] - 2026-02-20
+## [0.17.0] - 2026-02-24
 ### Added
-- Asynchronous API endpoints (`POST /api/v1/jobs` and `GET /api/v1/jobs/:id`).
-- Real-time terminal logging for WebAssembly runtime traps to improve debugging visibility.
-### Changed
-- Refactored `Judge` to safely auto-detect Wasm exports regardless of the internal function name.
-### Removed
-- Synchronous blocking deployment architecture in the Axum web server.
+- Wasmer `Singlepass` compiler integration to bypass Android/Termux AST recursion limits.
+- `wasmer-middlewares` Gas Metering to prevent infinite loops (`loop {}`) and CPU exhaustion.
 
-## [0.11.0] - 2026-02-20
+## [0.16.1] - 2026-02-23
 ### Added
-- Libp2p `Identify` protocol to stabilize TCP handshakes and prevent silent protocol drops.
-- 5-second `pending_dials` DashMap state to prevent mDNS connection flooding.
-### Fixed
-- TCP simultaneous open race conditions resolved via a deterministic Peer ID alphabetical Tie-Breaker.
+- Lazy Assignment API architecture.
+- Sysinfo hardware telemetry heartbeats over GossipSub.
+- Weighted Sharding math allocation with remainder sweeping.
+
+## [0.16.0] - 2026-02-23
+### Added
+- Ed25519 `SignedPayload` envelopes with 60-second TTL replay protection.
+- 1-to-1 `libp2p::request_response` Unicast streams to replace noisy GossipSub data routing.
