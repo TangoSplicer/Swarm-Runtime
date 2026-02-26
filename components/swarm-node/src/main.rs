@@ -53,12 +53,12 @@ pub struct SwarmStatus {
 pub struct JobState {
     pub expected_shards: usize,
     pub redundancy: usize,
-    pub raw_results: HashMap<u32, HashMap<libp2p::PeerId, i32>>,
-    pub verified_results: HashMap<u32, i32>,
+    pub raw_results: HashMap<u32, HashMap<libp2p::PeerId, (i32, String)>>, 
+    pub verified_results: HashMap<u32, (i32, String)>,
     pub created_at: Instant,
     pub assignments: HashMap<u32, HashMap<libp2p::PeerId, Instant>>,
     pub shards_data: HashMap<u32, Shard>,
-    pub unassigned_dataset: Option<Vec<i32>>,
+    pub unassigned_dataset: Option<Vec<String>>, 
     pub wasm_image: String,
 }
 
@@ -89,6 +89,7 @@ struct JobStatusResponse {
     status: String,
     total_sum: i32,
     breakdown: Vec<(u32, i32)>,
+    hashes: Vec<(u32, String)>,
     missing_shards: Vec<u32>,
 }
 
@@ -108,7 +109,7 @@ async fn main() -> Result<()> {
             
             let jobs = Arc::new(DashMap::new());
             let stats = Arc::new(Mutex::new(SwarmStatus { 
-                version: "0.17.1".to_string(), role: "GATEWAY".to_string(), peers_count: 0, peers: HashSet::new(),
+                version: "0.18.0".to_string(), role: "GATEWAY".to_string(), peers_count: 0, peers: HashSet::new(),
             }));
             let health_registry = Arc::new(DashMap::new());
             let pending_dials = Arc::new(DashMap::<libp2p::PeerId, Instant>::new());
@@ -135,7 +136,6 @@ async fn main() -> Result<()> {
                                 let mut job = entry.value().lock().await;
                                 let job_id = *entry.key();
                                 
-                                // === LAZY ASSIGNMENT SCHEDULER (Redundant Mode) ===
                                 if let Some(dataset) = job.unassigned_dataset.take() {
                                     let s = stat_c.lock().await;
                                     let active_peers: Vec<_> = s.peers.iter().copied().collect();
@@ -201,7 +201,6 @@ async fn main() -> Result<()> {
                                     continue; 
                                 }
 
-                                // === SLA MONITORING ===
                                 let is_complete = job.verified_results.len() >= job.expected_shards;
                                 if is_complete {
                                     if job.created_at.elapsed() > Duration::from_secs(300) { jobs_to_prune.push(job_id); }
@@ -210,7 +209,6 @@ async fn main() -> Result<()> {
 
                                 for shard_idx in 0..(job.expected_shards as u32) {
                                     if job.verified_results.contains_key(&shard_idx) { continue; }
-
                                     let mut failed_peers = Vec::new();
 
                                     if let Some(peer_assignments) = job.assignments.get(&shard_idx) {
@@ -301,32 +299,35 @@ async fn main() -> Result<()> {
                                                 
                                                 if guard.verified_results.contains_key(&res_data.shard_index) { continue; }
 
-                                                // BORROW CHECKER FIX: Scope block isolates the mutable borrow
                                                 let is_consensus_ready = {
                                                     let shard_results = guard.raw_results.entry(res_data.shard_index).or_insert_with(HashMap::new);
-                                                    shard_results.insert(peer, res_data.result);
-                                                    println!("📩 Received Result: Shard {} from {} = {}", res_data.shard_index, peer, res_data.result);
+                                                    shard_results.insert(peer, (res_data.result, res_data.result_hash.clone()));
+                                                    
+                                                    // FIX: Safe string slicing for Gateway
+                                                    let display_hash = if res_data.result_hash.len() >= 8 { &res_data.result_hash[..8] } else { &res_data.result_hash };
+                                                    println!("📩 Received Result Hash: [{}] from {}", display_hash, peer);
+                                                    
                                                     shard_results.len() >= guard.redundancy
                                                 };
 
-                                                // === DETERMINISTIC CONSENSUS CHECK ===
                                                 if is_consensus_ready {
-                                                    // .remove() securely takes ownership, freeing `guard` for other mutations
                                                     if let Some(shard_results) = guard.raw_results.remove(&res_data.shard_index) {
-                                                        let mut unique_results: Vec<i32> = shard_results.values().copied().collect();
+                                                        let mut unique_results: Vec<(i32, String)> = shard_results.values().cloned().collect();
                                                         unique_results.dedup();
 
                                                         if unique_results.len() == 1 {
-                                                            println!("✅ CONSENSUS REACHED: Shard {} verified as {}", res_data.shard_index, unique_results[0]);
-                                                            guard.verified_results.insert(res_data.shard_index, unique_results[0]);
-                                                        } else {
-                                                            println!("🚨 CONSENSUS FAILURE! Malicious node detected on Shard {}.", res_data.shard_index);
-                                                            println!("🚨 Conflicting Results: {:?}", shard_results);
+                                                            let (final_result, final_hash) = &unique_results[0];
                                                             
+                                                            // FIX: Safe string slicing for Consensus
+                                                            let final_display = if final_hash.len() >= 8 { &final_hash[..8] } else { final_hash };
+                                                            println!("✅ HASH CONSENSUS REACHED: Shard {} state verified [{}]", res_data.shard_index, final_display);
+                                                            
+                                                            guard.verified_results.insert(res_data.shard_index, (*final_result, final_hash.clone()));
+                                                        } else {
+                                                            println!("🚨 HASH COLLISION DETECTED! State mutation mismatch on Shard {}.", res_data.shard_index);
                                                             for (p, _) in shard_results.iter() {
                                                                 let _ = tx.send(NodeCommand::Disconnect(*p));
                                                             }
-                                                            
                                                             guard.assignments.remove(&res_data.shard_index);
                                                         }
                                                     }
@@ -441,7 +442,7 @@ async fn main() -> Result<()> {
                                             let signature = Signature::from_bytes(&sig_bytes);
                                             if verifying_key.verify(message_to_verify.as_bytes(), &signature).is_ok() {
                                                 if let Ok(shard_data) = serde_json::from_str::<Shard>(&envelope.payload_json) {
-                                                    println!("🔒 Verified & Claiming Shard {} ({} items)", shard_data.shard_index, shard_data.data.len());
+                                                    println!("🔒 Verified & Claiming Shard {} ({} Complex Items)", shard_data.shard_index, shard_data.data.len());
                                                     
                                                     let worker_tx = tx.clone();
                                                     let gateway_id = peer;
@@ -449,12 +450,34 @@ async fn main() -> Result<()> {
                                                     tokio::spawn(async move {
                                                         if let Ok(wasm) = general_purpose::STANDARD.decode(&shard_data.wasm_image) {
                                                             let mut judge = Judge::new(None).unwrap();
-                                                            let res = judge.execute(&wasm, &shard_data.data).unwrap_or(-1);
-                                                            println!("✅ Result: {}", res);
                                                             
-                                                            let result_obj = ShardResult { job_id: shard_data.parent_task_id, shard_index: shard_data.shard_index, result: res };
-                                                            let req = SwarmRequest::SubmitResult(serde_json::to_string(&result_obj).unwrap());
-                                                            let _ = worker_tx.send(NodeCommand::Unicast(gateway_id, req));
+                                                            // FIX: Explicit Error Matching to reveal Wasm Sandbox failures
+                                                            match judge.execute(&wasm, &shard_data.data) {
+                                                                Ok((res, hash)) => {
+                                                                    let short_hash = if hash.len() >= 8 { &hash[..8] } else { &hash };
+                                                                    println!("✅ Result: {} | Hash: [{}]", res, short_hash);
+                                                                    
+                                                                    let result_obj = ShardResult { 
+                                                                        job_id: shard_data.parent_task_id, 
+                                                                        shard_index: shard_data.shard_index, 
+                                                                        result: res,
+                                                                        result_hash: hash 
+                                                                    };
+                                                                    let req = SwarmRequest::SubmitResult(serde_json::to_string(&result_obj).unwrap());
+                                                                    let _ = worker_tx.send(NodeCommand::Unicast(gateway_id, req));
+                                                                },
+                                                                Err(e) => {
+                                                                    println!("❌ Sandbox Error: {}", e);
+                                                                    let result_obj = ShardResult { 
+                                                                        job_id: shard_data.parent_task_id, 
+                                                                        shard_index: shard_data.shard_index, 
+                                                                        result: -1,
+                                                                        result_hash: "ERROR".to_string() 
+                                                                    };
+                                                                    let req = SwarmRequest::SubmitResult(serde_json::to_string(&result_obj).unwrap());
+                                                                    let _ = worker_tx.send(NodeCommand::Unicast(gateway_id, req));
+                                                                }
+                                                            }
                                                         }
                                                     });
                                                 }
@@ -500,7 +523,7 @@ async fn submit_job(State(state): State<Arc<AppState>>, Json(payload): Json<Shar
     
     state.jobs.insert(task_id, Arc::new(Mutex::new(job_state)));
 
-    println!("📥 Job Queued: {} with {} items", task_id, payload.dataset.len());
+    println!("📥 Job Queued: {} with {} Complex Items", task_id, payload.dataset.len());
     
     (StatusCode::ACCEPTED, Json(JobSubmitResponse {
         job_id: task_id.to_string(),
@@ -514,24 +537,26 @@ async fn get_job_status(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>
         
         if guard.unassigned_dataset.is_some() {
             return (StatusCode::ACCEPTED, Json(JobStatusResponse {
-                status: "awaiting_telemetry".to_string(), total_sum: 0, breakdown: vec![], missing_shards: vec![]
+                status: "awaiting_telemetry".to_string(), total_sum: 0, breakdown: vec![], hashes: vec![], missing_shards: vec![]
             }));
         }
 
         let is_complete = guard.verified_results.len() >= guard.expected_shards;
-        let sum: i32 = guard.verified_results.values().sum();
-        let breakdown: Vec<(u32, i32)> = guard.verified_results.iter().map(|(k, v)| (*k, *v)).collect();
+        let sum: i32 = guard.verified_results.values().map(|(res, _)| *res).sum();
+        
+        let breakdown: Vec<(u32, i32)> = guard.verified_results.iter().map(|(k, v)| (*k, v.0)).collect();
+        let hashes: Vec<(u32, String)> = guard.verified_results.iter().map(|(k, v)| (*k, v.1.clone())).collect();
         
         let received_indices: Vec<u32> = guard.verified_results.keys().copied().collect();
         let missing_indices: Vec<u32> = (0..guard.expected_shards as u32).filter(|i| !received_indices.contains(i)).collect();
 
         if is_complete {
-            (StatusCode::OK, Json(JobStatusResponse { status: "completed".to_string(), total_sum: sum, breakdown, missing_shards: vec![] }))
+            (StatusCode::OK, Json(JobStatusResponse { status: "completed".to_string(), total_sum: sum, breakdown, hashes, missing_shards: vec![] }))
         } else {
-            (StatusCode::PARTIAL_CONTENT, Json(JobStatusResponse { status: "partial".to_string(), total_sum: sum, breakdown, missing_shards: missing_indices }))
+            (StatusCode::PARTIAL_CONTENT, Json(JobStatusResponse { status: "partial".to_string(), total_sum: sum, breakdown, hashes, missing_shards: missing_indices }))
         }
     } else {
-        (StatusCode::NOT_FOUND, Json(JobStatusResponse { status: "not_found".to_string(), total_sum: 0, breakdown: vec![], missing_shards: vec![] }))
+        (StatusCode::NOT_FOUND, Json(JobStatusResponse { status: "not_found".to_string(), total_sum: 0, breakdown: vec![], hashes: vec![], missing_shards: vec![] }))
     }
 }
 
@@ -539,7 +564,7 @@ async fn dashboard(State(_state): State<Arc<AppState>>) -> Html<String> {
     Html(r#"
         <div style="font-family: sans-serif; padding: 2rem;">
             <h1>🐝 Swarm Runtime Gateway</h1>
-            <p><strong>Version:</strong> v0.17.1 (Deterministic Consensus)</p>
+            <p><strong>Version:</strong> v0.18.0 (Universal Payloads & Hash Consensus)</p>
         </div>
     "#.to_string())
 }

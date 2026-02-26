@@ -4,7 +4,7 @@ use uuid::Uuid;
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ShardedDeployRequest {
     pub wasm_base64: String,
-    pub dataset: Vec<i32>,
+    pub dataset: Vec<String>, // UPGRADED: Now accepts complex strings/JSON
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -12,7 +12,7 @@ pub struct Shard {
     pub parent_task_id: Uuid,
     pub shard_index: u32,
     pub total_shards: u32,
-    pub data: Vec<i32>,
+    pub data: Vec<String>,    // UPGRADED: Shards contain string chunks
     pub wasm_image: String,
     pub target_peer: Option<String>,
 }
@@ -22,6 +22,7 @@ pub struct ShardResult {
     pub job_id: Uuid,
     pub shard_index: u32,
     pub result: i32,
+    pub result_hash: String,  // NEW: SHA-256 Hash of the execution state
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -31,10 +32,9 @@ pub struct SignedPayload {
     pub signature: Vec<u8>,   
 }
 
-/// NEW: Hardware Telemetry Envelope for the Control Plane
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Telemetry {
     pub peer_id: String,
-    pub cpu_usage: f32,    // Percentage 0.0 to 100.0
-    pub free_ram_mb: u64,  // Available memory in Megabytes
+    pub cpu_usage: f32,    
+    pub free_ram_mb: u64,  
 }

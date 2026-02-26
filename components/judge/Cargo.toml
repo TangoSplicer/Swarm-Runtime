@@ -9,3 +9,4 @@ wasmer = "4.2" # The Wasm Engine
 sled = "0.34"
 wasmer-middlewares = "=4.2.2"
 wasmer-compiler-singlepass = "=4.2.2"
+sha2 = "0.10.9"

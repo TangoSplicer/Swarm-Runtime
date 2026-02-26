@@ -29,3 +29,4 @@ synapse = { path = "../synapse" }
 judge = { path = "../judge" }
 ed25519-dalek = "2.2.0"
 sysinfo = "0.38.2"
+sha2 = "0.10.9"
