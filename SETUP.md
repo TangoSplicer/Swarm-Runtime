@@ -1,14 +1,15 @@
 # Swarm Environment Setup
 
-## 1. Termux (Primary)
+## 1. Termux (Primary Android Environment)
 * **Install:** `pkg install rust git build-essential clang openssl-tool python`
-* **Run Gateway:** `cargo run -p swarm-node -- gateway`
-* **Run Worker:** `cargo run -p swarm-node -- start --shard 1`
-
-## 2. Cross-Platform
-* **Linux/WSL:** Identical to Termux. Ensure `protoc` is installed for libp2p.
-* **Windows:** Use WSL2 (Ubuntu). Powershell may have path escaping issues.
-
-## 3. Verification
-* **Check Version:** Look for `v0.9.3` in the dashboard header.
-* **Check Wasm:** Use `make_final_wasm.py` to generate a valid test file.
+* **Crucial Build Flags:** Due to Android's memory limits, you must throttle the compiler:
+  ```bash
+  export RUST_MIN_STACK=8388608
+  CARGO_PROFILE_DEV_DEBUG=0 cargo build --workspace -j 1
+​Run Gateway: cargo run --bin swarm-node -- gateway --port 3000
+​Run Worker: cargo run --bin swarm-node -- start --shard 1
+​2. Cross-Platform
+​Linux/WSL: Identical to Termux. Standard cargo build works fine.
+​Windows: Use WSL2 (Ubuntu).
+​3. Verification
+​Check Version: Look for v0.18.1 (Modular Architecture) in the dashboard header at http://localhost:3000.

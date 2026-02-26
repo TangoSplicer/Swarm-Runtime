@@ -3,15 +3,15 @@
 
 [![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange)](https://www.rust-lang.org/)
 [![Termux](https://img.shields.io/badge/Platform-Android%20%2F%20Termux-green)](https://termux.dev/)
-[![Status](https://img.shields.io/badge/Release-v0.17.1%20(Execution%20Security)-blue)](https://github.com/TangoSplicer/Swarm-Runtime)
+[![Status](https://img.shields.io/badge/Release-v0.18.1%20(Modular%20Architecture)-blue)](https://github.com/TangoSplicer/Swarm-Runtime)
 
 Swarm Runtime turns Android devices into a fault-tolerant compute cluster. It uses **Libp2p** for mesh networking, **Axum** for a Headless REST API, and **Wasmer (Singlepass)** for secure sandboxed code execution.
 
-## 🚀 New in v0.17.1 (System Hardening Phase)
-* **🛡️ Deterministic Consensus:** Defeats malicious nodes by routing identical data to multiple peers and cryptographically verifying the results match.
-* **⛽ Gas Metering:** Protects mobile hardware from infinite loops by trapping Wasm execution at strict instruction limits.
-* **🧠 Mobile-Aware Scheduler:** Dynamically weighs CPU/RAM telemetry to route heavy Wasm payloads to the healthiest phones.
-* **🔒 Cryptographic Security:** Ed25519 digital signatures and TTL timestamps prevent replay attacks.
+## 🚀 New in v0.18.1 (Universal Data Phase)
+* **🧩 Modular Architecture:** Cleanly decoupled Gateway, Worker, and Network routing. 
+* **🧬 Universal Payloads:** Pass complex JSON and Strings directly into the WebAssembly sandbox via Host-Managed Linear Memory injection.
+* **#️⃣ Hash-Based Consensus:** Uses SHA-256 output state hashing to verify massive deterministic workloads without saturating mobile bandwidth.
+* **🛡️ Execution Security:** Gas-metered execution traps prevent infinite loops and protect battery life.
 
 ## 📦 Quick Start
 *(See SETUP.md for installation instructions).*
@@ -20,5 +20,5 @@ Swarm Runtime turns Android devices into a fault-tolerant compute cluster. It us
 1. **Queue:** Client submits dataset to Gateway (Returns `202 Accepted`).
 2. **Profile:** Workers broadcast `sysinfo` hardware metrics every 10s. 
 3. **Dispatch:** Gateway executes Weighted Sharding, duplicates shards for Redundancy, and securely Unicasts them.
-4. **Compute:** Workers verify signatures, instantiate the `Singlepass` gas-metered Wasm sandbox, and execute.
-5. **Consensus:** Gateway waits for redundant results to match. If they conflict, malicious nodes are banned.
+4. **Compute:** Workers instantiate Wasm, inject String bytes into linear memory, execute, and calculate a SHA-256 hash.
+5. **Consensus:** Gateway waits for Redundant Hashes to match, establishing cryptographic state agreement.

@@ -1,18 +1,24 @@
 # Swarm-Runtime: Technical Documentation
 
-## The Decoupled Network Brain (Synapse)
+## The Decoupled Network Brain
 1. **The Control Plane (GossipSub):** Lightweight mesh-wide state. Workers broadcast `TEL:` heartbeats.
-2. **The Data Plane (Request-Response):** Direct point-to-point TCP streams for heavy Wasm payloads, preventing broadcast storms.
+2. **The Data Plane (Request-Response):** Direct point-to-point TCP streams for heavy Wasm payloads.
 
-## Execution Security & The Sandbox
-Executing untrusted code on edge devices requires extreme security.
-* **Singlepass Compiler:** We utilize Wasmer's linear-time `Singlepass` compiler. It protects against JIT-bombs and drastically reduces memory overhead, preventing Android's Low Memory Killer (LMK) from terminating the node.
-* **Gas Metering:** The `judge` component attaches a middleware that assigns a cost to every Wasm instruction. If a module hits the 5,000,000 limit (e.g., an infinite `loop {}`), it instantly traps and terminates, saving mobile battery.
+## Universal Payloads & WebAssembly Memory
+To break free from primitive integer constraints, the Swarm `Judge` component acts as the Memory Manager for the WebAssembly guest.
+1. The dataset `Vec<String>` is joined into a continuous UTF-8 byte array.
+2. The Rust host calculates the required Wasm pages (64KB each) and allocates a `Memory` instance.
+3. The bytes are injected into a Host-Managed Fixed Buffer starting at an offset of **1MB** to prevent overwriting the guest's internal stack/heap.
+4. The host passes the `(pointer, length)` to the guest `execute()` function.
 
-## Deterministic Consensus (Anti-Cheat)
-To solve the Byzantine General's Problem, the Gateway implements Redundant Verification:
-1. `Redundancy Factor = 2`.
-2. Identical Wasm payloads are dispatched to multiple independent peers.
-3. The Gateway buffers `raw_results`.
-4. If unique results `== 1`, the result is migrated to `verified_results`.
-5. If results conflict, a `CONSENSUS FAILURE` is triggered, the data is discarded, and all conflicting peers are disconnected from the mesh.
+
+
+## Hash-Based Deterministic Consensus
+Returning massive JSON strings or files over the network for consensus comparison would cause instant network congestion and OOM crashes.
+Instead, we use **Output State Consensus**:
+1. The Worker executes the payload.
+2. The Worker hashes the output state using **SHA-256**.
+3. Only the 32-byte hash is returned to the Gateway.
+4. The Gateway compares the hashes from multiple redundant shards to ensure execution honesty before accepting the state.
+
+

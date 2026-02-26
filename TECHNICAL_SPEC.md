@@ -1,28 +1,29 @@
-# Swarm Runtime: Technical Specification v0.17.1
+# Swarm Runtime: Technical Specification v0.18.1
 
 ## 1. System Architecture
 * **Topology:** Physical Mesh (Libp2p), Logical Star (Gateway-Coordinator).
 * **Control Plane:** `gossipsub` (Used strictly for `TEL:` hardware heartbeats).
 * **Data Plane:** `libp2p::request_response` (1-to-1 Unicast TCP streams).
-* **Security Layer:** Static Ed25519 Root of Trust. Payloads are signed and time-stamped.
-* **Consensus:** Redundancy Factor 2 with strict identical integer matching.
+* **Security Layer:** Ed25519 Signatures, 60s TTL, Gas Metering traps.
+* **Consensus:** Redundancy Factor 2 + SHA-256 Output State Hashing.
 
 ## 2. Core Components
-### A. The Gateway (Orchestrator)
+### A. The Gateway (Orchestrator) - `gateway.rs`
 * **Role:**
     1. Accepts Wasm via HTTP POST (Lazy Assignment Queue).
-    2. Aggregates Worker telemetry (CPU/RAM).
-    3. Calculates Fitness Scores and applies Weighted Sharding math.
-    4. Cryptographically signs payloads and dispatches via Unicast to 2 separate peers.
-    5. Evaluates Deterministic Consensus and drops poisoned/conflicting data.
+    2. Calculates Fitness Scores based on hardware telemetry.
+    3. Dispatches payload shards via TCP Unicast to 2 separate peers.
+    4. Evaluates Hash-Based Consensus and drops poisoned data.
 
-### B. The Worker (Shard)
+### B. The Worker (Shard) - `worker.rs`
 * **Role:**
     1. Broadcasts hardware telemetry every 10 seconds.
-    2. Verifies Ed25519 payload signatures and TTLs.
-    3. **Runtime:** Instantiates Wasmer `Singlepass` compiler with a `5,000,000` gas limit.
-    4. Injects array into linear memory, executes, and Unicasts result back.
+    2. Verifies Ed25519 signatures.
+    3. Instantiates Wasmer `Singlepass` with a 5M gas limit.
+    4. Injects UTF-8 Strings into 1MB Memory Offset.
+    5. Calculates and Unicasts SHA-256 Hash of result.
 
 ## 3. Data Protocols
-* **Security Envelope:** `SignedPayload { payload_json, expires_at, signature }`
+* **Deploy Request:** `ShardedDeployRequest { wasm_base64, dataset: Vec<String> }`
+* **Shard Result:** `ShardResult { job_id, shard_index, result, result_hash }`
 * **Telemetry Payload:** `Telemetry { peer_id, cpu_usage, free_ram_mb }`
