@@ -3,15 +3,15 @@
 
 [![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange)](https://www.rust-lang.org/)
 [![Termux](https://img.shields.io/badge/Platform-Android%20%2F%20Termux-green)](https://termux.dev/)
-[![Status](https://img.shields.io/badge/Release-v0.18.1%20(Modular%20Architecture)-blue)](https://github.com/TangoSplicer/Swarm-Runtime)
+[![Status](https://img.shields.io/badge/Release-v0.20.0%20(Universal%20VMFS)-blue)](https://github.com/TangoSplicer/Swarm-Runtime)
 
-Swarm Runtime turns Android devices into a fault-tolerant compute cluster. It uses **Libp2p** for mesh networking, **Axum** for a Headless REST API, and **Wasmer (Singlepass)** for secure sandboxed code execution.
+Swarm Runtime turns Android devices into a fault-tolerant compute cluster. It uses **Libp2p** for mesh networking, **Axum** for a Headless REST API, and the **Wasmi** interpreter for secure, ARM64-safe sandboxed code execution.
 
-## 🚀 New in v0.18.1 (Universal Data Phase)
-* **🧩 Modular Architecture:** Cleanly decoupled Gateway, Worker, and Network routing. 
-* **🧬 Universal Payloads:** Pass complex JSON and Strings directly into the WebAssembly sandbox via Host-Managed Linear Memory injection.
+## 🚀 New in v0.20.0 (Universal VMFS Phase)
+* **🧠 Engine Pivot:** Replaced Wasmer JIT with the pure-Rust Wasmi interpreter, permanently resolving ARM64/aarch64 hardware alignment panics on mobile devices.
+* **📁 Virtual Mesh File System (VMFS):** WebAssembly tasks can now safely write to a host-mapped `/data` directory using `cap-std` ambient authority.
+* **🌐 DHT File Pinning:** Workers sweep the VMFS for output files, hash them, and announce them to the Kademlia DHT for network-wide state sharing.
 * **#️⃣ Hash-Based Consensus:** Uses SHA-256 output state hashing to verify massive deterministic workloads without saturating mobile bandwidth.
-* **🛡️ Execution Security:** Gas-metered execution traps prevent infinite loops and protect battery life.
 
 ## 📦 Quick Start
 *(See SETUP.md for installation instructions).*
@@ -20,5 +20,5 @@ Swarm Runtime turns Android devices into a fault-tolerant compute cluster. It us
 1. **Queue:** Client submits dataset to Gateway (Returns `202 Accepted`).
 2. **Profile:** Workers broadcast `sysinfo` hardware metrics every 10s. 
 3. **Dispatch:** Gateway executes Weighted Sharding, duplicates shards for Redundancy, and securely Unicasts them.
-4. **Compute:** Workers instantiate Wasm, inject String bytes into linear memory, execute, and calculate a SHA-256 hash.
+4. **Compute:** Workers instantiate Wasm, inject data, map the VMFS, execute, and calculate a SHA-256 hash of the output state/files.
 5. **Consensus:** Gateway waits for Redundant Hashes to match, establishing cryptographic state agreement.

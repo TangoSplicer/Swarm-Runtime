@@ -3,6 +3,19 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.20.0] - 2026-02-27
+### Added
+- Virtual Mesh File System (VMFS): WASI integration to grant Wasm secure access to virtual sandboxed directories using `cap-std` ambient authority.
+- VMFS Sweeper logic: Workers detect newly generated files post-execution and hash them.
+- Kademlia DHT Integration: Workers successfully announce hashed file states to the decentralized mesh.
+### Changed
+- Replaced Wasmer JIT with `wasmi` interpreter to permanently bypass ARM64/aarch64 strict hardware memory alignment panics on Android.
+
+## [0.19.0] - 2026-02-26
+### Added
+- Groundwork for WASI integration to support Virtual File Systems.
+- Pre-flight scaffolding for Swarm decentralized storage nodes.
+
 ## [0.18.1] - 2026-02-26
 ### Changed
 - Refactored `swarm-node` monolith into modular components: `main.rs`, `gateway.rs`, `worker.rs`, and `types.rs`.

@@ -12,4 +12,4 @@
 ​Linux/WSL: Identical to Termux. Standard cargo build works fine.
 ​Windows: Use WSL2 (Ubuntu).
 ​3. Verification
-​Check Version: Look for v0.18.1 (Modular Architecture) in the dashboard header at http://localhost:3000.
+​Check Version: Look for v0.20.0 (Universal VMFS & Engine Pivot) in the dashboard header at http://localhost:3000.
