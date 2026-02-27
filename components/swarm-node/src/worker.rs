@@ -1,12 +1,14 @@
 use anyhow::Result;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use libp2p::{swarm::SwarmEvent, mdns, request_response};
+use libp2p::{swarm::SwarmEvent, mdns, request_response, kad};
 use futures::StreamExt;
 use std::sync::Arc;
 use dashmap::DashMap;
 use base64::{engine::general_purpose, Engine as _};
 use ed25519_dalek::{VerifyingKey, Signature, Verifier};
 use sysinfo::System;
+use std::fs;
+use sha2::{Sha256, Digest};
 
 use synapse::{SynapseNode, SynapseBehaviorEvent, SwarmRequest, SwarmResponse};
 use judge::Judge;
@@ -26,7 +28,6 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
     let worker_tx_tel = tx.clone();
     let my_peer_id = local_peer_id.to_string();
     
-    // Telemetry Heartbeat Loop
     tokio::spawn(async move {
         let mut sys = System::new_all();
         let mut interval = tokio::time::interval(Duration::from_secs(10));
@@ -45,7 +46,6 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
         }
     });
 
-    // P2P Event Loop
     loop {
         tokio::select! {
             Some(cmd) = rx.recv() => {
@@ -55,6 +55,20 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
                     NodeCommand::Disconnect(peer) => { 
                         println!("⛔ BANNING PEER: {}", peer);
                         let _ = p2p_node.swarm.disconnect_peer_id(peer); 
+                    },
+                    // --- KADEMLIA DHT PUBLISHER ---
+                    NodeCommand::PinFile(hash) => {
+                        let record = kad::Record {
+                            key: kad::RecordKey::new(&hash),
+                            value: local_peer_id.to_bytes(),
+                            publisher: None,
+                            expires: None,
+                        };
+                        if let Err(e) = p2p_node.swarm.behaviour_mut().kademlia.put_record(record, kad::Quorum::One) {
+                            println!("⚠️ DHT Pin Error: {:?}", e);
+                        } else {
+                            println!("🌐 DHT: Successfully announced file [{}] to the Mesh!", &hash[..8]);
+                        }
                     }
                 }
             },
@@ -80,7 +94,7 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
                             if let Ok(envelope) = serde_json::from_str::<SignedPayload>(&json_payload) {
                                 let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
                                 if now > envelope.expires_at {
-                                    println!("🚨 REPLAY ATTACK: Payload expired. Banning.");
+                                    println!("🚨 REPLAY ATTACK: Payload expired.");
                                     let _ = tx.send(NodeCommand::Disconnect(peer));
                                     continue;
                                 }
@@ -90,7 +104,7 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
                                     let signature = Signature::from_bytes(&sig_bytes);
                                     if verifying_key.verify(message_to_verify.as_bytes(), &signature).is_ok() {
                                         if let Ok(shard_data) = serde_json::from_str::<Shard>(&envelope.payload_json) {
-                                            println!("🔒 Verified & Claiming Shard {} ({} Complex Items)", shard_data.shard_index, shard_data.data.len());
+                                            println!("🔒 Verified & Claiming Shard {}", shard_data.shard_index);
                                             
                                             let worker_tx = tx.clone();
                                             let gateway_id = peer;
@@ -100,9 +114,34 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
                                                     let mut judge = Judge::new(None).unwrap();
                                                     
                                                     match judge.execute(&wasm, &shard_data.data) {
-                                                        Ok((res, hash)) => {
+                                                        Ok((res, mut hash)) => {
+                                                            let sandbox_dir = "./swarm_data";
+                                                            if let Ok(entries) = fs::read_dir(sandbox_dir) {
+                                                                for entry in entries.flatten() {
+                                                                    if let Ok(meta) = entry.metadata() {
+                                                                        if meta.is_file() {
+                                                                            let path = entry.path();
+                                                                            if let Ok(bytes) = fs::read(&path) {
+                                                                                let mut hasher = Sha256::new();
+                                                                                hasher.update(&bytes);
+                                                                                let file_hash = format!("{:x}", hasher.finalize());
+                                                                                
+                                                                                println!("📁 VMFS: Found new file {} (Hash: [{}])", path.display(), &file_hash[..8]);
+                                                                                
+                                                                                // 1. Tell libp2p to announce this to the Kademlia DHT
+                                                                                let _ = worker_tx.send(NodeCommand::PinFile(file_hash.clone()));
+                                                                                
+                                                                                // 2. Lock the file hash in as our execution state
+                                                                                hash = file_hash;
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+
                                                             let short_hash = if hash.len() >= 8 { &hash[..8] } else { &hash };
-                                                            println!("✅ Result: {} | Hash: [{}]", res, short_hash);
+                                                            println!("✅ Result: {} | Output Hash: [{}]", res, short_hash);
+                                                            
                                                             let result_obj = ShardResult { job_id: shard_data.parent_task_id, shard_index: shard_data.shard_index, result: res, result_hash: hash };
                                                             let req = SwarmRequest::SubmitResult(serde_json::to_string(&result_obj).unwrap());
                                                             let _ = worker_tx.send(NodeCommand::Unicast(gateway_id, req));
@@ -117,9 +156,6 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
                                                 }
                                             });
                                         }
-                                    } else {
-                                        println!("🚨 MALICIOUS PAYLOAD: Invalid signature. Banning.");
-                                        let _ = tx.send(NodeCommand::Disconnect(peer));
                                     }
                                 }
                             }

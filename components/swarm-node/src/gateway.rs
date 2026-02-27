@@ -27,7 +27,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
     
     let jobs = Arc::new(DashMap::new());
     let stats = Arc::new(Mutex::new(SwarmStatus { 
-        version: "0.18.1".to_string(), role: "GATEWAY".to_string(), peers_count: 0, peers: HashSet::new(),
+        version: "0.19.0".to_string(), role: "GATEWAY".to_string(), peers_count: 0, peers: HashSet::new(),
     }));
     let health_registry = Arc::new(DashMap::new());
     let pending_dials = Arc::new(DashMap::<libp2p::PeerId, Instant>::new());
@@ -178,7 +178,9 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                     match cmd {
                         NodeCommand::Unicast(peer, req) => { let _ = p2p_node.send_request(&peer, req); },
                         NodeCommand::Broadcast(msg) => { let _ = p2p_node.publish_to_topic("swarm-control-plane", msg); },
-                        NodeCommand::Disconnect(peer) => { let _ = p2p_node.swarm.disconnect_peer_id(peer); }
+                        NodeCommand::Disconnect(peer) => { let _ = p2p_node.swarm.disconnect_peer_id(peer); },
+                        // FIX: Exhaustive match requirement. Gateway gracefully ignores file pins.
+                        NodeCommand::PinFile(_) => {} 
                     }
                 },
                 event = p2p_node.swarm.select_next_some() => {
@@ -343,7 +345,7 @@ async fn dashboard(State(_state): State<Arc<AppState>>) -> Html<String> {
     Html(r#"
         <div style="font-family: sans-serif; padding: 2rem;">
             <h1>🐝 Swarm Runtime Gateway</h1>
-            <p><strong>Version:</strong> v0.18.1 (Modular Architecture)</p>
+            <p><strong>Version:</strong> v0.19.0 (WASI Virtual File System)</p>
         </div>
     "#.to_string())
 }

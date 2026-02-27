@@ -75,9 +75,10 @@ pub enum NodeCommand {
     Unicast(libp2p::PeerId, SwarmRequest),
     Broadcast(String), 
     Disconnect(libp2p::PeerId),
+    PinFile(String), // NEW: Instructs libp2p to announce a file hash to the DHT
 }
 
-#[allow(dead_code)] // Silences the compiler warning for future-proofed fields
+#[allow(dead_code)]
 pub struct AppState {
     pub node_tx: tokio::sync::mpsc::UnboundedSender<NodeCommand>,
     pub jobs: Arc<DashMap<Uuid, Arc<Mutex<JobState>>>>,

@@ -1,88 +1,77 @@
 use anyhow::{anyhow, Result};
-use std::sync::Arc;
-use wasmer::{
-    imports, CompilerConfig, EngineBuilder, Instance, Module, Store, Memory, MemoryType, Value
-};
-use wasmer_compiler_singlepass::Singlepass;
-use wasmer_middlewares::Metering;
-use wasmer_middlewares::metering::{get_remaining_points, set_remaining_points, MeteringPoints};
+use wasmi::*;
+use wasmi_wasi::WasiCtxBuilder;
 use sha2::{Sha256, Digest};
+use std::fs;
 
 pub struct Judge {
-    store: Store,
-    gas_limit: u64,
+    engine: Engine,
+    linker: Linker<wasmi_wasi::WasiCtx>,
 }
 
 impl Judge {
-    pub fn new(gas_limit: Option<u64>) -> Result<Self> {
-        let limit = gas_limit.unwrap_or(5_000_000);
-        let cost_function = |_: &wasmer::wasmparser::Operator| -> u64 { 1 };
-        let metering = Arc::new(Metering::new(limit, cost_function));
-        let mut compiler = Singlepass::default();
-        compiler.push_middleware(metering);
-        
-        let engine = EngineBuilder::new(compiler);
-        let store = Store::new(engine);
-        Ok(Self { store, gas_limit: limit })
+    pub fn new(_gas_limit: Option<u64>) -> Result<Self> {
+        let mut config = Config::default();
+        config.consume_fuel(true);
+        let engine = Engine::new(&config);
+        let linker = <Linker<wasmi_wasi::WasiCtx>>::new(&engine);
+        Ok(Self { engine, linker })
     }
 
-    /// Executes the Wasm module against a complex dataset.
-    /// Returns a tuple: (i32_result, sha256_hash_of_state)
     pub fn execute(&mut self, wasm_bytes: &[u8], dataset: &[String]) -> Result<(i32, String)> {
-        let module = Module::new(&self.store, wasm_bytes)?;
-        
-        // Convert the String array into a single contiguous UTF-8 byte array
-        let joined_dataset = dataset.join("\n");
-        let payload_bytes = joined_dataset.as_bytes();
-        
-        // Host-Managed Fixed Buffer strategy (Offset: 1MB)
-        let ptr_offset: u64 = 1_048_576; 
-        
-        // 1 Wasm Page = 64KB. Ensure we allocate enough pages to cover the 1MB offset + payload size
-        let required_pages = ((ptr_offset + payload_bytes.len() as u64) / 65536) + 2;
-        let memory = Memory::new(&mut self.store, MemoryType::new(required_pages as u32, None, false))?;
+        let sandbox_dir = "./swarm_data";
+        fs::create_dir_all(sandbox_dir)?;
 
-        // Safely write the complex byte payload directly into the sandbox's virtual memory
-        let view = memory.view(&self.store);
-        view.write(ptr_offset, payload_bytes).map_err(|e| anyhow!("Memory Injection Error: {}", e))?;
+        // 1. Setup Capability-based WASI Context using the perfectly matched cap-std
+        let dir = cap_std::fs::Dir::open_ambient_dir(sandbox_dir, cap_std::ambient_authority())
+            .map_err(|e| anyhow!("Failed to open ambient dir: {}", e))?;
+            
+        let wasi_ctx = WasiCtxBuilder::new()
+            .inherit_stdout()
+            .inherit_stderr()
+            .preopened_dir(dir, "/data")
+            .map_err(|e| anyhow!("WASI preopened_dir error: {}", e))?
+            .build();
 
-        let import_object = imports! { "env" => { "memory" => memory.clone() } };
-        let instance = Instance::new(&mut self.store, &module, &import_object)?;
-        set_remaining_points(&mut self.store, &instance, self.gas_limit);
+        let mut store = Store::new(&self.engine, wasi_ctx);
+        store.add_fuel(1_000_000).map_err(|e| anyhow!("Fuel error: {}", e))?;
 
-        let execute_func = instance.exports.get_function("execute")?;
-
-        // UPGRADED ABI: Pass (pointer, length) so the Wasm module knows where its string data lives
-        let args = [Value::I32(ptr_offset as i32), Value::I32(payload_bytes.len() as i32)];
+        // 2. Load Module
+        let module = Module::new(&self.engine, wasm_bytes)?;
         
-        println!("⛽ Executing Wasm Sandbox (Injected {} bytes at ptr 0x{:X})", payload_bytes.len(), ptr_offset);
+        // 3. Define the Host Memory & WASI Imports for the Guest
+        let mut linker = self.linker.clone();
+        wasmi_wasi::add_to_linker(&mut linker, |ctx| ctx)
+            .map_err(|e| anyhow!("WASI link error: {}", e))?;
         
-        match execute_func.call(&mut self.store, &args) {
-            Ok(result) => {
-                if let Some(Value::I32(val)) = result.get(0) {
-                    let remaining = get_remaining_points(&mut self.store, &instance);
-                    if let MeteringPoints::Remaining(points) = remaining {
-                        println!("✅ Execution complete. Gas used: {}", self.gas_limit - points);
-                    }
-                    
-                    // OUTPUT STATE CONSENSUS: Hash the deterministic output execution state
-                    let mut hasher = Sha256::new();
-                    hasher.update(val.to_le_bytes()); // In v0.19 this will hash the output memory buffer!
-                    let result_hash = format!("{:x}", hasher.finalize());
+        let instance = linker.instantiate(&mut store, &module)
+            .map_err(|e| anyhow!("Instantiation error: {}", e))?
+            .start(&mut store)
+            .map_err(|e| anyhow!("Start error: {}", e))?;
+        
+        // 4. Safe Manual Memory Write
+        let joined = dataset.join("\n");
+        let payload = joined.as_bytes();
+        let ptr_offset = 1_048_576;
 
-                    Ok((*val, result_hash))
-                } else {
-                    Err(anyhow!("Wasm function did not return an i32"))
-                }
-            },
-            Err(e) => {
-                if let MeteringPoints::Exhausted = get_remaining_points(&mut self.store, &instance) {
-                    println!("🚨 SANDBOX TRAP: Out of Gas! Terminating infinite loop.");
-                    Err(anyhow!("Gas Exhaustion: Wasm module exceeded {} instructions.", self.gas_limit))
-                } else {
-                    Err(anyhow!("Wasm Runtime Error: {}", e))
-                }
+        if let Some(memory) = instance.get_memory(&store, "memory") {
+            memory.write(&mut store, ptr_offset, payload)
+                .map_err(|e| anyhow!("Memory write error: {:?}", e))?;
+        }
+
+        // 5. Run Execution
+        let execute_func = instance.get_typed_func::<(i32, i32), i32>(&store, "execute")
+            .map_err(|e| anyhow!("Export error: {}", e))?;
+        
+        println!("🔋 Wasmi Interpreter engaged. Executing with virtual stack...");
+        
+        match execute_func.call(&mut store, (ptr_offset as i32, payload.len() as i32)) {
+            Ok(res) => {
+                let mut hasher = Sha256::new();
+                hasher.update(res.to_le_bytes());
+                Ok((res, format!("{:x}", hasher.finalize())))
             }
+            Err(e) => Err(anyhow!("Execution Error: {}", e))
         }
     }
 }
