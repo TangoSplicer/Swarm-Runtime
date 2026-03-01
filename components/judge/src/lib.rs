@@ -19,14 +19,16 @@ impl Judge {
     }
 
     pub fn execute(&mut self, wasm_bytes: &[u8], dataset: &[String]) -> Result<(i32, String)> {
-        let sandbox_dir = "./swarm_data";
+        // SECURE CHROOT FILESYSTEM
+        let sandbox_dir = "./rootfs/data";
         fs::create_dir_all(sandbox_dir)
-            .map_err(|e| anyhow!("Failed to create sandbox dir: {}", e))?;
+            .map_err(|e| anyhow!("Failed to create data dir: {}", e))?;
+        fs::create_dir_all("./rootfs/lib")
+            .map_err(|e| anyhow!("Failed to create lib dir: {}", e))?;
 
         let module = Module::new(&self.engine, wasm_bytes)
             .map_err(|e| anyhow!("Module compilation error: {}", e))?;
 
-        // 1. Inspect the WebAssembly Module Exports
         let is_wasi_start = module.exports().any(|e| e.name() == "_start");
         let is_legacy = module.exports().any(|e| e.name() == "execute");
 
@@ -38,33 +40,29 @@ impl Judge {
         let mut wasi_args: Vec<String> = vec!["swarm-wasm".to_string()]; 
 
         if is_wasi_start {
-            // 2. Write the dataset directly into the sandboxed VMFS
             let app_py_path = format!("{}/app.py", sandbox_dir);
             fs::write(&app_py_path, &joined_dataset)
                 .map_err(|e| anyhow!("Failed to write app.py to VMFS: {}", e))?;
             
-            // 3. Configure WASI Context arguments for the polyglot interpreter
-            wasi_args = vec!["python".to_string(), "/data/app.py".to_string()];
+            wasi_args = vec!["python".to_string(), "-B".to_string(), "-S".to_string(), "/data/app.py".to_string()];
         }
 
-        // Setup Capability-based WASI Context using cap-std ambient authority
-        let dir = cap_std::fs::Dir::open_ambient_dir(sandbox_dir, cap_std::ambient_authority())
-            .map_err(|e| anyhow!("Failed to open ambient dir: {}", e))?;
+        let root_dir = cap_std::fs::Dir::open_ambient_dir("./rootfs", cap_std::ambient_authority())
+            .map_err(|e| anyhow!("Failed to open rootfs dir: {}", e))?;
             
         let wasi_ctx = WasiCtxBuilder::new()
             .inherit_stdout()
             .inherit_stderr()
             .args(&wasi_args)
             .map_err(|e| anyhow!("WASI args error: {}", e))?
-            .preopened_dir(dir, "/data")
+            .preopened_dir(root_dir, "/")
             .map_err(|e| anyhow!("WASI preopened_dir error: {}", e))?
             .build();
 
         let mut store = Store::new(&self.engine, wasi_ctx);
-        store.set_fuel(5_000_000)
-            .map_err(|e| anyhow!("Failed to set fuel limit: {}", e))?;
+        store.add_fuel(50_000_000_000)
+            .map_err(|e| anyhow!("Failed to add fuel: {}", e))?;
 
-        // Define the Host Memory & WASI Imports for the Guest
         let mut linker = self.linker.clone();
         wasmi_wasi::add_to_linker(&mut linker, |ctx| ctx)
             .map_err(|e| anyhow!("WASI link error: {}", e))?;
@@ -77,7 +75,6 @@ impl Judge {
         let mut result_code = 0;
 
         if is_legacy {
-            // 4A. Legacy Execution: Safe Manual Memory Write to 1MB Offset
             let payload = joined_dataset.as_bytes();
             let ptr_offset = 1_048_576;
 
@@ -95,9 +92,8 @@ impl Judge {
                 .map_err(|e| anyhow!("Legacy execution trap: {}", e))?;
 
         } else if is_wasi_start {
-            // 4B. Polyglot Execution: Standard WASI _start
             let start_func = instance.get_typed_func::<(), ()>(&store, "_start")
-                .map_err(|e| anyhow!("Export error: {}", e))?;
+                .map_err(|e| anyhow!("Export error: {}", e))?; 
             
             println!("🐍 Wasmi Interpreter engaged. Executing polyglot _start...");
             
@@ -105,7 +101,6 @@ impl Judge {
                 .map_err(|e| anyhow!("Polyglot execution trap: {}", e))?;
         }
 
-        // 5. Output State Consensus / VMFS Sweeper
         let mut hasher = Sha256::new();
         
         if is_wasi_start {

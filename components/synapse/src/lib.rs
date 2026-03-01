@@ -70,7 +70,7 @@ impl SynapseNode {
 
                 // 5. Request-Response (Data Plane)
                 let req_res_protocol = StreamProtocol::new("/swarm/req-res/1.0.0");
-                let req_res_config = request_response::Config::default();
+                let req_res_config = request_response::Config::default().with_request_timeout(std::time::Duration::from_secs(300));
                 let req_res = request_response::cbor::Behaviour::<SwarmRequest, SwarmResponse>::new(
                     [(req_res_protocol, request_response::ProtocolSupport::Full)],
                     req_res_config,

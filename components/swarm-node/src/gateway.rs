@@ -278,7 +278,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
         .route("/", get(dashboard))
         .route("/api/v1/jobs", post(submit_job))
         .route("/api/v1/jobs/:id", get(get_job_status))
-        .with_state(shared_state);
+        .layer(axum::extract::DefaultBodyLimit::max(50_000_000)).with_state(shared_state);
         
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     println!("Gateway Active: http://localhost:{}", port);

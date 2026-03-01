@@ -110,7 +110,7 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
                                             let gateway_id = peer;
                                             
                                             tokio::spawn(async move {
-                                                if let Ok(wasm) = general_purpose::STANDARD.decode(&shard_data.wasm_image) {
+                                                if let Ok(wasm) = if shard_data.wasm_image == "POLYGLOT:PYTHON" { Ok(std::fs::read("python.wasm").unwrap_or_default()) } else { general_purpose::STANDARD.decode(&shard_data.wasm_image) } {
                                                     let mut judge = Judge::new(None).unwrap();
                                                     
                                                     match judge.execute(&wasm, &shard_data.data) {
