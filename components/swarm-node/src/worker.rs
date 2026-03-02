@@ -110,10 +110,16 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
                                             let gateway_id = peer;
                                             
                                             tokio::spawn(async move {
-                                                if let Ok(wasm) = if shard_data.wasm_image == "POLYGLOT:PYTHON" { Ok(std::fs::read("python.wasm").unwrap_or_default()) } else { general_purpose::STANDARD.decode(&shard_data.wasm_image) } {
+                                                let polyglot_id = if shard_data.wasm_image.starts_with("POLYGLOT:") { shard_data.wasm_image.clone() } else { "NONE".to_string() };
+                                                let wasm_result = match polyglot_id.as_str() {
+                                                    "POLYGLOT:PYTHON" => Ok(std::fs::read("python.wasm").unwrap_or_default()),
+                                                    "POLYGLOT:JS" => Ok(std::fs::read("qjs.wasm").unwrap_or_default()),
+                                                    _ => general_purpose::STANDARD.decode(&shard_data.wasm_image),
+                                                };
+                                                if let Ok(wasm) = wasm_result {
                                                     let mut judge = Judge::new(None).unwrap();
                                                     
-                                                    match judge.execute(&wasm, &shard_data.data) {
+                                                    match judge.execute(&wasm, &shard_data.data, &polyglot_id) {
                                                         Ok((res, mut hash)) => {
                                                             let sandbox_dir = "./swarm_data";
                                                             if let Ok(entries) = fs::read_dir(sandbox_dir) {
