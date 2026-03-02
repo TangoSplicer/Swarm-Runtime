@@ -46,6 +46,9 @@ impl Judge {
             } else if polyglot_id == "POLYGLOT:LUA" {
                 target_file = "app.lua";
                 wasi_args = vec!["lua".to_string(), "/data/app.lua".to_string()];
+            } else if polyglot_id == "POLYGLOT:RUBY" {
+                target_file = "app.rb";
+                wasi_args = vec!["ruby".to_string(), "/data/app.rb".to_string()];
             } else if polyglot_id == "POLYGLOT:LUA" {
                 target_file = "app.lua";
                 wasi_args = vec!["lua".to_string(), "/data/app.lua".to_string()];

@@ -68,7 +68,8 @@ async fn main() -> Result<()> {
                 "python" => "POLYGLOT:PYTHON",
                 "js" | "javascript" => "POLYGLOT:JS",
                 "lua" => "POLYGLOT:LUA",
-                _ => anyhow::bail!("Unsupported language: {}. Currently supported: python, js, lua", lang),
+                "ruby" | "rb" => "POLYGLOT:RUBY",
+                _ => anyhow::bail!("Unsupported language: {}. Currently supported: python, js, lua, ruby", lang),
             };
 
             let payload = DeployPayload {
