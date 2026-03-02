@@ -35,7 +35,6 @@ impl Judge {
         let mut wasi_args: Vec<String> = vec!["swarm-wasm".to_string()]; 
         let mut target_file = "app.txt";
 
-        // DYNAMIC POLYGLOT ROUTING
         if is_wasi_start {
             if polyglot_id == "POLYGLOT:PYTHON" {
                 target_file = "app.py";
@@ -49,9 +48,9 @@ impl Judge {
             } else if polyglot_id == "POLYGLOT:RUBY" {
                 target_file = "app.rb";
                 wasi_args = vec!["ruby".to_string(), "/data/app.rb".to_string()];
-            } else if polyglot_id == "POLYGLOT:LUA" {
-                target_file = "app.lua";
-                wasi_args = vec!["lua".to_string(), "/data/app.lua".to_string()];
+            } else if polyglot_id == "POLYGLOT:PHP" {
+                target_file = "app.php";
+                wasi_args = vec!["php".to_string(), "/data/app.php".to_string()];
             }
             
             let app_path = format!("{}/{}", sandbox_dir, target_file);
@@ -65,33 +64,40 @@ impl Judge {
             .inherit_stdout()
             .inherit_stderr()
             .args(&wasi_args)
-            .unwrap();
+            .map_err(|e| anyhow!("WASI args error: {}", e))?;
         
         if polyglot_id == "POLYGLOT:PYTHON" {
-            builder = builder.env("PYTHONPATH", "/python-wasi.zip").unwrap().env("PYTHONHOME", "/").unwrap();
+            builder = builder.env("PYTHONPATH", "/python-wasi.zip").map_err(|e| anyhow!("Env error: {}", e))?
+                             .env("PYTHONHOME", "/").map_err(|e| anyhow!("Env error: {}", e))?;
         }
 
-        let wasi_ctx = builder.preopened_dir(root_dir, "/").unwrap().build();
+        let wasi_ctx = builder.preopened_dir(root_dir, "/")
+            .map_err(|e| anyhow!("WASI preopened_dir error: {}", e))?
+            .build();
 
         let mut store = Store::new(&self.engine, wasi_ctx);
-        store.add_fuel(50_000_000_000).unwrap();
+        store.add_fuel(50_000_000_000).map_err(|e| anyhow!("Fuel error: {}", e))?;
 
         let mut linker = self.linker.clone();
-        wasmi_wasi::add_to_linker(&mut linker, |ctx| ctx).unwrap();
+        wasmi_wasi::add_to_linker(&mut linker, |ctx| ctx).map_err(|e| anyhow!("WASI link error: {}", e))?;
         
-        let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
+        let instance = linker.instantiate(&mut store, &module)
+            .map_err(|e| anyhow!("WASI Instantiate error: {}", e))?
+            .start(&mut store)
+            .map_err(|e| anyhow!("WASI Start error: {}", e))?;
+            
         let mut result_code = 0;
 
         if is_legacy {
             let payload = joined_dataset.as_bytes();
             let ptr_offset = 1_048_576;
             if let Some(memory) = instance.get_memory(&store, "memory") {
-                memory.write(&mut store, ptr_offset, payload).unwrap();
+                memory.write(&mut store, ptr_offset, payload).map_err(|e| anyhow!("Memory write error: {}", e))?;
             }
-            let execute_func = instance.get_typed_func::<(i32, i32), i32>(&store, "execute").unwrap();
-            result_code = execute_func.call(&mut store, (ptr_offset as i32, payload.len() as i32)).unwrap();
+            let execute_func = instance.get_typed_func::<(i32, i32), i32>(&store, "execute").map_err(|e| anyhow!("Export error: {}", e))?;
+            result_code = execute_func.call(&mut store, (ptr_offset as i32, payload.len() as i32)).map_err(|e| anyhow!("Execution trap: {}", e))?;
         } else {
-            let start_func = instance.get_typed_func::<(), ()>(&store, "_start").unwrap(); 
+            let start_func = instance.get_typed_func::<(), ()>(&store, "_start").map_err(|e| anyhow!("Export error: {}", e))?; 
             start_func.call(&mut store, ()).unwrap_or_else(|_| println!("Execution trap caught (normal for WASI exit)."));
         }
 
