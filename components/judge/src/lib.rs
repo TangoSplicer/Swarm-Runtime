@@ -51,6 +51,9 @@ impl Judge {
             } else if polyglot_id == "POLYGLOT:PHP" {
                 target_file = "app.php";
                 wasi_args = vec!["php".to_string(), "/data/app.php".to_string()];
+            } else if polyglot_id == "POLYGLOT:SQLITE" {
+                target_file = "app.sql";
+                wasi_args = vec!["sqlite3".to_string(), "/data/swarm.db".to_string(), ".read /data/app.sql".to_string()];
             }
             
             let app_path = format!("{}/{}", sandbox_dir, target_file);

@@ -70,7 +70,8 @@ async fn main() -> Result<()> {
                 "lua" => "POLYGLOT:LUA",
                 "ruby" | "rb" => "POLYGLOT:RUBY",
                 "php" => "POLYGLOT:PHP",
-                _ => anyhow::bail!("Unsupported language: {}. Currently supported: python, js, lua, ruby, php", lang),
+                "sqlite" | "sql" => "POLYGLOT:SQLITE",
+                _ => anyhow::bail!("Unsupported language: {}. Currently supported: python, js, lua, ruby, php, sqlite", lang),
             };
 
             let payload = DeployPayload {

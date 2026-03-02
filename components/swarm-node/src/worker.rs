@@ -117,6 +117,7 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
                                                     "POLYGLOT:LUA" => Ok(std::fs::read("lua.wasm").unwrap_or_default()),
                                                     "POLYGLOT:RUBY" => Ok(std::fs::read("ruby.wasm").unwrap_or_default()),
                                                     "POLYGLOT:PHP" => Ok(std::fs::read("php.wasm").unwrap_or_default()),
+                                                    "POLYGLOT:SQLITE" => Ok(std::fs::read("sqlite.wasm").unwrap_or_default()),
                                                     _ => general_purpose::STANDARD.decode(&shard_data.wasm_image),
                                                 };
                                                 if let Ok(wasm) = wasm_result {
