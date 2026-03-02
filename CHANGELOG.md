@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+# Swarm Runtime Changelog
+
+All notable changes to this project will be documented in this file.
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+
+## [0.20.3] - 2026-03-02
+### Added
+- `swarm-cli` developer tool for unified REST API deployments (`deploy`) and verification (`status`).
+- Polyglot Edge Caching: Bypassed the 2MB libp2p payload limit using `POLYGLOT:LANG` identifiers to load massive interpreters directly from worker storage.
+- WASI Chroot Jails: Refactored the `Judge` to map an isolated `./rootfs` environment, permanently resolving `Errno 76` capability traps caused by Android Termux symlinks.
+- Increased Wasmi execution fuel limits to 50 Billion operations to support full CPython boots.
+
 ## [0.20.0] - 2026-02-27
 ### Added
 - Virtual Mesh File System (VMFS): WASI integration to grant Wasm secure access to virtual sandboxed directories using `cap-std` ambient authority.
