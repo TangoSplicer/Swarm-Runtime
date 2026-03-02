@@ -67,7 +67,8 @@ async fn main() -> Result<()> {
             let identifier = match lang.to_lowercase().as_str() {
                 "python" => "POLYGLOT:PYTHON",
                 "js" | "javascript" => "POLYGLOT:JS",
-                _ => anyhow::bail!("Unsupported language: {}. Currently supported: python, js", lang),
+                "lua" => "POLYGLOT:LUA",
+                _ => anyhow::bail!("Unsupported language: {}. Currently supported: python, js, lua", lang),
             };
 
             let payload = DeployPayload {

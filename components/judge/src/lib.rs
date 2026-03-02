@@ -43,6 +43,12 @@ impl Judge {
             } else if polyglot_id == "POLYGLOT:JS" {
                 target_file = "app.js";
                 wasi_args = vec!["qjs".to_string(), "/data/app.js".to_string()];
+            } else if polyglot_id == "POLYGLOT:LUA" {
+                target_file = "app.lua";
+                wasi_args = vec!["lua".to_string(), "/data/app.lua".to_string()];
+            } else if polyglot_id == "POLYGLOT:LUA" {
+                target_file = "app.lua";
+                wasi_args = vec!["lua".to_string(), "/data/app.lua".to_string()];
             }
             
             let app_path = format!("{}/{}", sandbox_dir, target_file);
