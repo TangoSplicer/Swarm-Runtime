@@ -62,7 +62,33 @@ async fn main() -> Result<()> {
             println!("🚀 Preparing deployment for: {}", file);
 
             let (wasm_base64, dataset) = match lang.to_lowercase().as_str() {
-                                "wasm" => {
+                                                "zig" => {
+                    println!("⚙️  Locally compiling Zig source natively to WASIp1...");
+                    let temp_wasm = format!("{}.wasm", file.replace(".zig", "").replace("/", "_"));
+                    
+                    let status = std::process::Command::new("zig")
+                        .args([
+                            "build-exe", file, 
+                            "-target", "wasm32-wasi", 
+                            "-O", "ReleaseSmall", 
+                            &format!("-femit-bin={}", temp_wasm)
+                        ])
+                        .status()
+                        .context("Failed to execute zig compiler. Is Zig installed?")?;
+
+                    if !status.success() {
+                        anyhow::bail!("❌ Zig compilation failed!");
+                    }
+
+                    let wasm_bytes = std::fs::read(&temp_wasm).context("Failed to read compiled wasm")?;
+                    let _ = std::fs::remove_file(&temp_wasm); // Cleanup binary
+                    let _ = std::fs::remove_file(format!("{}.o", temp_wasm)).unwrap_or_default(); // Cleanup object file
+                    
+                    use base64::{Engine as _, engine::general_purpose};
+                    let encoded = general_purpose::STANDARD.encode(&wasm_bytes);
+                    (encoded, vec!["EXECUTE_NATIVE_WASM".to_string()])
+                },
+                "wasm" => {
                     println!("⚙️  Reading raw WebAssembly binary...");
                     let wasm_bytes = fs::read(file).context("Failed to read .wasm file")?;
                     use base64::{Engine as _, engine::general_purpose};
@@ -105,7 +131,7 @@ async fn main() -> Result<()> {
                     };
                     (identifier.to_string(), vec![code])
                 },
-                _ => anyhow::bail!("Unsupported language: {}. Currently supported: python, js, lua, ruby, php, sqlite, go, wasm", lang),
+                _ => anyhow::bail!("Unsupported language: {}. Currently supported: python, js, lua, ruby, php, sqlite, go, wasm, zig", lang),
             };
 
             let payload = DeployPayload {
