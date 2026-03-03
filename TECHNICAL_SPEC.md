@@ -1,32 +1,24 @@
-# Swarm Runtime: Technical Specification v0.20.9
+# Swarm Runtime: Technical Specification v0.21.1
 
 ## 1. System Architecture
 * **Topology:** Physical Mesh (Libp2p), Logical Star (Gateway-Coordinator).
 * **Control Plane:** `gossipsub` (Used strictly for `TEL:` hardware heartbeats).
-* **Data Plane:** `libp2p::request_response` (1-to-1 Unicast TCP streams).
+* **Data Plane:** `libp2p::request_response` (1-to-1 Unicast TCP streams) with a strict 2MB Stream Limit.
 * **Storage Plane:** `libp2p::kad` (Kademlia DHT for VMFS file pinning).
-* **Security Layer:** Ed25519 Signatures, 60s TTL, Gas Metering traps (50 Billion Ops).
 * **Consensus:** Dynamic Redundancy Factor (Max: 2) + SHA-256 Output State Hashing.
 
-## 2. Dynamic Polyglot Routing
-The Swarm uses a "Zero-Extraction" Edge Caching architecture to bypass the Libp2p 2MB payload limit. 
-1. The CLI attaches a `POLYGLOT:LANG` identifier to the deployment payload.
-2. The Worker intercepts this ID and loads the corresponding pre-cached WASI binary (e.g., `php.wasm`, `qjs.wasm`) from local storage into memory.
-3. The `Judge` writes the incoming payload to a language-specific virtual file (`app.php`, `app.js`) in the `/rootfs/data` chroot jail.
-4. The `Judge` dynamically constructs the WASI arguments (e.g., `["php", "/data/app.php"]`) and boots the engine.
+## 2. Dynamic Payload Routing (Interpreted vs Compiled)
+The Swarm CLI multiplexes deployments into two major network pipelines to optimize network buffers:
 
-## 3. Core Components
-### A. The Gateway (Orchestrator) - `gateway.rs`
-* **Role:**
-    1. Accepts Polyglot Code via HTTP POST.
-    2. Calculates Fitness Scores based on hardware telemetry.
-    3. Dispatches payload shards via TCP Unicast to 2 separate peers.
-    4. Evaluates Hash-Based Consensus.
-    5. **SLA Monitor:** Monitors peer timeouts. If a peer drops a shard, dynamically downgrades Redundancy Factor to 1 to force completion.
+### A. Zero-Extraction Edge Caching (Interpreted)
+Used for massive engines (Python, Ruby, PHP).
+1. The CLI attaches a `POLYGLOT:LANG` identifier and sends the pure text source.
+2. The Worker loads a pre-cached WASI binary (e.g., `php.wasm`) from local storage into memory.
+3. The source text is executed against the cached engine inside the `Judge`.
 
-### B. The Worker (Shard) - `worker.rs` & `judge`
-* **Role:**
-    1. Broadcasts hardware telemetry every 10 seconds.
-    2. Maps `./rootfs` strictly via `cap-std` ambient authority (Chroot Jail).
-    3. Executes Wasm safely using `.map_err()` to prevent Host thread panics.
-    4. Sweeps VMFS sandbox, calculates SHA-256 Hashes of outputs, and pins to DHT.
+### B. Local compilation & Base64 Transfer (Compiled)
+Used for highly-optimized System Languages (Zig, Raw Wasm).
+1. The CLI intercepts the command, spawns a child process (`zig build-exe -target wasm32-wasi -O ReleaseSmall`), and generates an ultra-lean `.wasm` file.
+2. The CLI encodes the binary as a Base64 string and deploys it with a standard `_start` WASIp1 identifier.
+3. The Gateway shards a pseudo-dataset string (`"EXECUTE_NATIVE_WASM"`) to trigger the MapReduce load-balancer.
+4. Workers instantly execute the native bytes directly in Wasmi without any Edge Cache lookups.

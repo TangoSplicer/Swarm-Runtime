@@ -1,19 +1,14 @@
 # Swarm-Runtime: Technical Documentation
 
-## Polyglot WASI Routing & ABI Standardization
-WebAssembly relies on the WebAssembly System Interface (WASI) to securely interact with the host OS (Android/Linux). During the Polyglot Phase, the Swarm unified all runtimes to the stable `wasi_snapshot_preview1` ABI. 
-* **WASI Patching:** Legacy binaries utilizing the deprecated `wasi_unstable` ABI (e.g., Lua, SQLite) were natively decompiled via `wabt` to WebAssembly Text (`.wat`), patched with the new ABI string, and recompiled on the edge device to prevent Linker panics.
-* **WASIp1 Alignment:** The Swarm officially supports the W3C's new `wasip1` nomenclature (utilized by the Ruby 3.2+ command module).
+## Defeating Network Bloat: The Zig Pivot
+During Phase 5.6, natively compiling Go 1.26 to the WebAssembly System Interface (`wasip1`) generated highly bloated 2.5MB binaries that exceeded the internal limits of `libp2p::request_response` standard CBOR codecs. To avoid rewriting core networking abstractions, the Swarm utilizes **Zig**. Zig acts as an ultra-lean LLVM frontend that compiles systems-level logic into bare-metal ~5KB binaries, easily gliding through the mesh TCP streams.
 
-## Byzantine Fault Tolerance & The Hardened Judge
-The Swarm incorporates a strict **"Silent Error Law"** within the `Judge` execution environment.
-* `unwrap()` and `expect()` are strictly forbidden during module instantiation and memory allocation.
-* If a WASI engine fails to boot, traps, or encounters a memory fault, the `Judge` safely catches the error via `Result<()>` mapping.
-* The Worker gracefully degrades, calculates an `[ERROR]` hash state, and returns it to the Gateway. This allows the Gateway to achieve deterministic consensus on the failure state without the network crashing or hanging.
+## MapReduce and The Empty Shard Trap
+The Swarm uses a Weighted Sharding algorithm designed for massively parallel datasets. The Scheduler calculates the number of tasks by dividing the `dataset` array length by the Redundancy Factor. 
+When compiled Wasm modules were introduced, the CLI initially submitted an empty array (`vec![]`), causing the Scheduler to evaluate `0 / 2 = 0 tasks`. This resulted in silent network drops. The CLI now injects a `EXECUTE_NATIVE_WASM` dummy trigger to force the Scheduler to un-pause the Dispatcher thread.
 
 ## Hash-Based Deterministic Consensus
-Returning massive JSON strings or SQLite databases over the network for consensus comparison would cause network congestion.
-1. The Worker executes the polyglot payload.
-2. The Worker hashes the output state and newly written VMFS files using **SHA-256**.
-3. Only the 32-byte hash is returned to the Gateway.
-4. The Gateway compares hashes from multiple shards to establish execution honesty.
+Returning massive JSON strings or files over the network for consensus comparison would cause instant network congestion and OOM crashes. Instead, we use **Output State Consensus**:
+1. The Worker executes the polyglot/compiled payload.
+2. The Worker hashes the output state and any modified files using **SHA-256**.
+3. Only the 32-byte hash is returned to the Gateway to evaluate execution honesty.

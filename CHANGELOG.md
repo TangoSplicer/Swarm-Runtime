@@ -8,27 +8,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+[0.21.1] - 2026-03-03
+Added
+Polyglot: Zig support via auto-local compilation (wasm32-wasi -O ReleaseSmall).
+CLI dynamic toolchain interception for compiled payloads.
+
+[0.21.0] - 2026-03-03
+Added
+Core: Direct base64 raw .wasm payload deployment via the REST API.
+Fixed
+"Empty Shard Trap": CLI now injects "EXECUTE_NATIVE_WASM" dataset triggers to force the MapReduce Scheduler to dispatch compiled binaries across the Libp2p network.
+
 [0.20.9] - 2026-03-02
 Added
 Polyglot: SQLite serverless database integration via sqlite.wasm.
 Changed
 Decompiled and patched SQLite WASI ABI to strictly adhere to wasi_snapshot_preview1.
+
 [0.20.8] - 2026-03-02
 Security
 Hardened the Judge component against Rust thread panics. Eliminated all .unwrap() calls during Wasm instantiation, enabling the Gateway to achieve consensus on failed states without network degradation.
+
 [0.20.7] - 2026-03-02
 Added
 Polyglot: PHP 8.2 execution support via Wasm Labs slim binary.
+
 [0.20.6] - 2026-03-02
 Added
 Polyglot: Ruby execution support utilizing the official wasip1 CLI Command Module.
+
 [0.20.5] - 2026-03-02
 Added
 Polyglot: Lua execution support. Manually patched legacy wasi_unstable imports via wabt tooling on Android.
+
 [0.20.4] - 2026-03-02
 Added
 Polyglot: JavaScript/TypeScript support via the QuickJS WebAssembly engine
-
 
 ## [0.20.3] - 2026-03-02
 ### Added
