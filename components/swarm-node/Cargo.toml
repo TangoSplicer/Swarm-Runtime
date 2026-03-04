@@ -1,6 +1,6 @@
 [package]
 name = "swarm-node"
-version = "0.19.3"
+version = "0.22.0"
 edition = "2021"
 
 [dependencies]
@@ -30,3 +30,4 @@ judge = { path = "../judge" }
 ed25519-dalek = "2.2.0"
 sysinfo = "0.38.2"
 sha2 = "0.10.9"
+hex = "0.4"

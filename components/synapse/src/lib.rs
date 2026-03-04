@@ -12,6 +12,8 @@ pub enum SwarmRequest {
     DispatchShard(String),
     /// Worker -> Gateway: Returning the calculated Result (JSON String)
     SubmitResult(String),
+    /// Client -> Worker: Requesting a file by its SHA-256 Hash
+    FetchData(String),
 }
 
 /// The Unicast Response Payload
@@ -21,6 +23,8 @@ pub enum SwarmResponse {
     Ack,
     /// Rejection or Error
     Error(String),
+    /// Worker -> Client: Returning the requested file bytes
+    DataPayload(Vec<u8>),
 }
 
 #[derive(NetworkBehaviour)]

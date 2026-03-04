@@ -52,7 +52,8 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
                 match cmd {
                     NodeCommand::Unicast(peer, req) => { let _ = p2p_node.send_request(&peer, req); },
                     NodeCommand::Broadcast(msg) => { let _ = p2p_node.publish_to_topic("swarm-control-plane", msg); },
-                    NodeCommand::Disconnect(peer) => { 
+                    NodeCommand::FetchFile(_, _) => {}, // Ignored: Gateway-only command
+                        NodeCommand::Disconnect(peer) => { 
                         println!("⛔ BANNING PEER: {}", peer);
                         let _ = p2p_node.swarm.disconnect_peer_id(peer); 
                     },
@@ -88,7 +89,34 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
                         }
                     },
                     SwarmEvent::Behaviour(SynapseBehaviorEvent::ReqRes(request_response::Event::Message { peer, message })) => {
-                        if let request_response::Message::Request { request: SwarmRequest::DispatchShard(json_payload), channel, .. } = message {
+                        if let request_response::Message::Request { request: SwarmRequest::FetchData(hash), channel, .. } = message {
+                                println!("📥 Received FetchData request for Hash: [{}]", hash);
+                                let mut file_bytes = Vec::new();
+                                
+                                // Sweep the VMFS to find the file matching the requested hash
+                                if let Ok(entries) = std::fs::read_dir("./rootfs/data") {
+                                    for entry in entries.flatten() {
+                                        if let Ok(content) = std::fs::read(entry.path()) {
+                                            use sha2::{Sha256, Digest};
+                                            let mut hasher = Sha256::new();
+                                            hasher.update(&content);
+                                            if hex::encode(hasher.finalize()) == hash {
+                                                file_bytes = content;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // Stream the result back to the Gateway
+                                if file_bytes.is_empty() {
+                                    println!("❌ File not found in VMFS for Hash: [{}]", hash);
+                                    p2p_node.send_response(channel, SwarmResponse::Error("File not found in VMFS".to_string()));
+                                } else {
+                                    println!("📤 Streaming {} bytes back to Gateway...", file_bytes.len());
+                                    p2p_node.send_response(channel, SwarmResponse::DataPayload(file_bytes));
+                                }
+                            } else if let request_response::Message::Request { request: SwarmRequest::DispatchShard(json_payload), channel, .. } = message {
                             p2p_node.send_response(channel, SwarmResponse::Ack);
                             
                             if let Ok(envelope) = serde_json::from_str::<SignedPayload>(&json_payload) {
@@ -125,7 +153,7 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
                                                     
                                                     match judge.execute(&wasm, &shard_data.data, &polyglot_id) {
                                                         Ok((res, mut hash)) => {
-                                                            let sandbox_dir = "./swarm_data";
+                                                            let sandbox_dir = "./rootfs/data";
                                                             if let Ok(entries) = fs::read_dir(sandbox_dir) {
                                                                 for entry in entries.flatten() {
                                                                     if let Ok(meta) = entry.metadata() {

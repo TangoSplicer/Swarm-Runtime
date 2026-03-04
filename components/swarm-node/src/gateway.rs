@@ -43,7 +43,10 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
     
     tokio::spawn(async move {
         let mut sla_interval = tokio::time::interval(Duration::from_secs(3));
-        loop {
+        let mut req_to_hash: HashMap<libp2p::request_response::OutboundRequestId, String> = HashMap::new();
+    let mut hash_to_tx: HashMap<String, tokio::sync::oneshot::Sender<Option<Vec<u8>>>> = HashMap::new();
+    
+    loop {
             tokio::select! {
                 _ = sla_interval.tick() => {
                     let mut re_routes = Vec::new();
@@ -180,7 +183,15 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                         NodeCommand::Broadcast(msg) => { let _ = p2p_node.publish_to_topic("swarm-control-plane", msg); },
                         NodeCommand::Disconnect(peer) => { let _ = p2p_node.swarm.disconnect_peer_id(peer); },
                         // FIX: Exhaustive match requirement. Gateway gracefully ignores file pins.
-                        NodeCommand::PinFile(_) => {} 
+                        NodeCommand::PinFile(_) => {}
+                        NodeCommand::FetchFile(hash, reply_tx) => {
+                            let peers = stat_c.lock().await.peers.clone();
+                            hash_to_tx.insert(hash.clone(), reply_tx);
+                            for peer in peers {
+                                let req_id = p2p_node.send_request(&peer, SwarmRequest::FetchData(hash.clone()));
+                                req_to_hash.insert(req_id, hash.clone());
+                            }
+                        } 
                     }
                 },
                 event = p2p_node.swarm.select_next_some() => {
@@ -209,7 +220,15 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                             }
                         },
                         SwarmEvent::Behaviour(SynapseBehaviorEvent::ReqRes(request_response::Event::Message { peer, message })) => {
-                            if let request_response::Message::Request { request: SwarmRequest::SubmitResult(json_payload), channel, .. } = message {
+                            if let request_response::Message::Response { request_id, response } = message {
+                            if let Some(hash) = req_to_hash.remove(&request_id) {
+                                if let SwarmResponse::DataPayload(bytes) = response {
+                                    if let Some(tx) = hash_to_tx.remove(&hash) {
+                                        let _ = tx.send(Some(bytes));
+                                    }
+                                }
+                            }
+                        } else if let request_response::Message::Request { request: SwarmRequest::SubmitResult(json_payload), channel, .. } = message {
                                 p2p_node.send_response(channel, SwarmResponse::Ack);
                                 
                                 if let Ok(res_data) = serde_json::from_str::<ShardResult>(&json_payload) {
@@ -278,6 +297,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
         .route("/", get(dashboard))
         .route("/api/v1/jobs", post(submit_job))
         .route("/api/v1/jobs/:id", get(get_job_status))
+        .route("/api/v1/data/:hash", get(fetch_data))
         .layer(axum::extract::DefaultBodyLimit::max(50_000_000)).with_state(shared_state);
         
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
@@ -292,7 +312,7 @@ async fn submit_job(State(state): State<Arc<AppState>>, Json(payload): Json<Shar
     
     let job_state = JobState {
         expected_shards: 0, 
-        redundancy: 1, 
+        redundancy: 2, 
         raw_results: HashMap::new(),
         verified_results: HashMap::new(),
         created_at: Instant::now(),
@@ -348,4 +368,14 @@ async fn dashboard(State(_state): State<Arc<AppState>>) -> Html<String> {
             <p><strong>Version:</strong> v0.19.0 (WASI Virtual File System)</p>
         </div>
     "#.to_string())
+}
+
+async fn fetch_data(State(state): State<Arc<AppState>>, Path(hash): Path<String>) -> (StatusCode, Vec<u8>) {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let _ = state.node_tx.send(NodeCommand::FetchFile(hash.clone(), tx));
+    
+    match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
+        Ok(Ok(Some(bytes))) => (StatusCode::OK, bytes),
+        _ => (StatusCode::NOT_FOUND, b"File not found on network".to_vec()),
+    }
 }

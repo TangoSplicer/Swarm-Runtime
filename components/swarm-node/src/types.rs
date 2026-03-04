@@ -75,7 +75,8 @@ pub enum NodeCommand {
     Unicast(libp2p::PeerId, SwarmRequest),
     Broadcast(String), 
     Disconnect(libp2p::PeerId),
-    PinFile(String), // NEW: Instructs libp2p to announce a file hash to the DHT
+    PinFile(String),
+    FetchFile(String, tokio::sync::oneshot::Sender<Option<Vec<u8>>>), // NEW: Instructs libp2p to announce a file hash to the DHT
 }
 
 #[allow(dead_code)]

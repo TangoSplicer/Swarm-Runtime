@@ -1,5 +1,0 @@
-local file = io.open("/data/output.txt", "w")
-file:write("Phase 5.5: Lua Mesh Active.")
-file:close()
-print("Executing decentralized Lua! Writing to /data/output.txt")
-print("Execution complete. SHA-256 Hash consensus ready.")

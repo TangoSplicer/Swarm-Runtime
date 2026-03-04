@@ -13,6 +13,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Fetch a file from the network using its SHA-256 Hash
+    Fetch {
+        /// The SHA-256 Hash of the file
+        hash: String,
+
+        /// The Gateway URL
+        #[arg(long, default_value = "http://127.0.0.1:3000")]
+        gateway: String,
+    },
     /// Deploy a script to the Swarm network
     Deploy {
         /// The path to the script file (e.g., app.py)
@@ -158,6 +167,28 @@ async fn main() -> Result<()> {
                 println!("   Error: {}", res.text().await.unwrap_or_default());
             }
         }
+        Commands::Fetch { hash, gateway } => {
+            println!("🔍 Querying Gateway for File Hash: {}...", hash);
+            
+            
+            match client.get(format!("{}/api/v1/data/{}", gateway, hash)).send().await {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        if let Ok(bytes) = response.bytes().await {
+                            let filename = format!("download_{}.bin", &hash[..8]);
+                            if std::fs::write(&filename, &bytes).is_ok() {
+                                println!("✅ Success! File downloaded to: {}", filename);
+                            } else {
+                                println!("❌ Failed to write file to disk.");
+                            }
+                        }
+                    } else {
+                        println!("❌ Failed to retrieve file. It may not exist on the network.");
+                    }
+                },
+                Err(e) => println!("❌ Failed to connect to Gateway: {}", e),
+            }
+        },
         Commands::Status { job_id, gateway } => {
             let url = format!("{}/api/v1/jobs/{}", gateway.trim_end_matches('/'), job_id);
             println!("🔍 Querying Gateway for Job ID: {}...", job_id);
