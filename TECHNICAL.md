@@ -1,14 +1,13 @@
-# Swarm-Runtime: Technical Documentation
+# Swarm-Runtime: Technical Documentation & Post-Mortems
 
-## Defeating Network Bloat: The Zig Pivot
-During Phase 5.6, natively compiling Go 1.26 to the WebAssembly System Interface (`wasip1`) generated highly bloated 2.5MB binaries that exceeded the internal limits of `libp2p::request_response` standard CBOR codecs. To avoid rewriting core networking abstractions, the Swarm utilizes **Zig**. Zig acts as an ultra-lean LLVM frontend that compiles systems-level logic into bare-metal ~5KB binaries, easily gliding through the mesh TCP streams.
+## Defeating the Tokio Async/Blocking Panic
+During the Phase 6 CLI upgrade, integrating a synchronous `reqwest::blocking::Client` into an active `tokio` runtime resulted in immediate thread abortion. Tokio strictly forbids thread-blocking operations within its async thread pool to prevent deadlocks. The `swarm-cli` was entirely refactored to use `reqwest::Client` combined with `#[tokio::main]`, shifting the CLI into a purely asynchronous networking model.
 
-## MapReduce and The Empty Shard Trap
-The Swarm uses a Weighted Sharding algorithm designed for massively parallel datasets. The Scheduler calculates the number of tasks by dividing the `dataset` array length by the Redundancy Factor. 
-When compiled Wasm modules were introduced, the CLI initially submitted an empty array (`vec![]`), causing the Scheduler to evaluate `0 / 2 = 0 tasks`. This resulted in silent network drops. The CLI now injects a `EXECUTE_NATIVE_WASM` dummy trigger to force the Scheduler to un-pause the Dispatcher thread.
+## The Empty Hash Trap
+When evaluating output consensus, the `judge` executes a strict SHA-256 hash against `./rootfs/data/output.txt`. If a deployed WebAssembly module writes to standard output (`stdout`) instead of the file system, the Judge calculates the hash of an empty buffer (or a fallback string). The resulting hash (`e3b0c442...`) represents zero data. All Wasm payloads must explicitly open and write to `output.txt` within their WASI sandbox to be retrievable by the DHT.
 
-## Hash-Based Deterministic Consensus
-Returning massive JSON strings or files over the network for consensus comparison would cause instant network congestion and OOM crashes. Instead, we use **Output State Consensus**:
-1. The Worker executes the polyglot/compiled payload.
-2. The Worker hashes the output state and any modified files using **SHA-256**.
-3. Only the 32-byte hash is returned to the Gateway to evaluate execution honesty.
+## The Shared-Drive Race Condition (BFT Security Event)
+When testing a distributed network on a single physical device (e.g., Termux), running multiple Workers causes them to share the host's physical `./rootfs/data` directory. 
+Because the Gateway's Redundancy Factor (RF=2) dispatches duplicate shards simultaneously, both `tokio::spawn` worker threads attempt to overwrite `output.txt` at the exact same millisecond. 
+This read/write collision causes the Workers to return mismatched hashes to the Gateway. The Gateway's Byzantine Fault Tolerance algorithm detects this discrepancy, labels the nodes as compromised, and terminates their TCP connections. 
+**Solution:** Single-device testing requires dynamically dropping the Redundancy Factor to 1, or isolating the Worker binary execution paths.

@@ -1,24 +1,20 @@
-# Swarm Runtime: Technical Specification v0.21.1
+# Swarm Runtime: Technical Specification v0.22.0
 
 ## 1. System Architecture
 * **Topology:** Physical Mesh (Libp2p), Logical Star (Gateway-Coordinator).
 * **Control Plane:** `gossipsub` (Used strictly for `TEL:` hardware heartbeats).
-* **Data Plane:** `libp2p::request_response` (1-to-1 Unicast TCP streams) with a strict 2MB Stream Limit.
+* **Data Plane:** `libp2p::request_response` (1-to-1 Unicast TCP streams) extended with `FetchData` and `DataPayload` custom CBOR protocols.
 * **Storage Plane:** `libp2p::kad` (Kademlia DHT for VMFS file pinning).
 * **Consensus:** Dynamic Redundancy Factor (Max: 2) + SHA-256 Output State Hashing.
 
-## 2. Dynamic Payload Routing (Interpreted vs Compiled)
-The Swarm CLI multiplexes deployments into two major network pipelines to optimize network buffers:
+## 2. Distributed Data Retrieval Protocol (Phase 6)
+The Gateway acts as an asynchronous bridge between the standard HTTP web (Axum) and the asynchronous P2P mesh (Libp2p).
+1. **The Request:** CLI issues an async `GET /api/v1/data/<HASH>`.
+2. **The Bridge:** Axum generates a `tokio::sync::oneshot` channel and passes it to the Libp2p event loop via `NodeCommand::FetchFile`.
+3. **The Sweep:** The Gateway queries connected peers via `SwarmRequest::FetchData(hash)`.
+4. **The VMFS Scan:** The Worker node intercepts the request, hashes the files in its `./rootfs/data` Virtual Mesh File System, and matches the SHA-256 string.
+5. **The Stream:** The Worker returns the raw bytes in a `SwarmResponse::DataPayload`. The Gateway pushes the bytes through the oneshot channel, streaming directly back to the CLI.
 
-### A. Zero-Extraction Edge Caching (Interpreted)
-Used for massive engines (Python, Ruby, PHP).
-1. The CLI attaches a `POLYGLOT:LANG` identifier and sends the pure text source.
-2. The Worker loads a pre-cached WASI binary (e.g., `php.wasm`) from local storage into memory.
-3. The source text is executed against the cached engine inside the `Judge`.
-
-### B. Local compilation & Base64 Transfer (Compiled)
-Used for highly-optimized System Languages (Zig, Raw Wasm).
-1. The CLI intercepts the command, spawns a child process (`zig build-exe -target wasm32-wasi -O ReleaseSmall`), and generates an ultra-lean `.wasm` file.
-2. The CLI encodes the binary as a Base64 string and deploys it with a standard `_start` WASIp1 identifier.
-3. The Gateway shards a pseudo-dataset string (`"EXECUTE_NATIVE_WASM"`) to trigger the MapReduce load-balancer.
-4. Workers instantly execute the native bytes directly in Wasmi without any Edge Cache lookups.
+## 3. Dynamic Polyglot Routing
+* **Zero-Extraction Edge Caching:** Massive Wasm engines (Python, Ruby, PHP) are pre-cached on Workers. The CLI sends plain text source with a `POLYGLOT:LANG` routing ID.
+* **Local Compilation:** Systems languages (Zig) are compiled to ultra-lean `wasm32-wasi` via the CLI *before* network transmission, bypassing the 2MB Libp2p Stream limit.
