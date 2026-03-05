@@ -1,0 +1,6 @@
+feat(runtime): implement Phase 7 Persistent Stateful Actors & BFT thread safety
+
+- Judge Engine: Added WebAssembly linear memory extraction and injection to enable persistent `.state` files across executions.
+- Memory Safety: Replaced the hardcoded 1MB legacy pointer with a dynamic offset algorithm, placing dataset payloads at the absolute end of the memory buffer to prevent state collisions.
+- Worker Concurrency: Implemented a global `tokio::sync::Mutex` lock manager in `worker.rs` to guarantee thread-safe intra-worker file I/O for smart contract states.
+- Consensus Validation: Validated Byzantine Fault Tolerance (BFT) redundancy using isolated worker directories to accurately simulate physical multi-device hardware environments.

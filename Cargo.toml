@@ -6,6 +6,6 @@ members = [
     "components/judge",
     "components/lazarus",
     "components/swarm-node"
-, "components/swarm-cli"]
+, "components/swarm-cli", "stateful-counter"]
 # Removed "examples/shard-worker" from this list!
 resolver = "2"
