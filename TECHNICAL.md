@@ -1,13 +1,17 @@
 # Swarm-Runtime: Technical Documentation & Post-Mortems
 
-## Defeating the Tokio Async/Blocking Panic
-During the Phase 6 CLI upgrade, integrating a synchronous `reqwest::blocking::Client` into an active `tokio` runtime resulted in immediate thread abortion. Tokio strictly forbids thread-blocking operations within its async thread pool to prevent deadlocks. The `swarm-cli` was entirely refactored to use `reqwest::Client` combined with `#[tokio::main]`, shifting the CLI into a purely asynchronous networking model.
+## The BFT Deadlock: Deduplication vs Redundancy (Phase 8)
+When implementing Job Deduplication (preventing a single worker from claiming multiple shards of the same job), a mathematical paradox occurred. The Gateway, running Redundancy Factor 2, split a job into Shard 0 and Shard 1. It expected 4 total executions (2 per shard). With only 2 workers online, Worker 1 took Shard 1, Worker 2 took Shard 0, and both locked the job in their `DashSet` cache. The Gateway hung indefinitely waiting for redundant checks that could never happen. 
+**Solution:** Implemented **Atomic Routing**. Stateful contracts are no longer split. The entire payload is wrapped into a single Shard 0, allowing both workers to compute the exact same shard concurrently, fulfilling redundancy mathematically.
 
-## The Empty Hash Trap
-When evaluating output consensus, the `judge` executes a strict SHA-256 hash against `./rootfs/data/output.txt`. If a deployed WebAssembly module writes to standard output (`stdout`) instead of the file system, the Judge calculates the hash of an empty buffer (or a fallback string). The resulting hash (`e3b0c442...`) represents zero data. All Wasm payloads must explicitly open and write to `output.txt` within their WASI sandbox to be retrievable by the DHT.
+## The Late-Joiner State Divergence
+In a stateful distributed system, if Worker 3 joins a network that has already incremented a contract 50 times, Worker 3's initial execution will start from `0`, resulting in a Hash Collision and a Gateway Ban.
+**Solution:** Implemented P2P Pre-Flight State Synchronization. The Gateway appends `|STATE:<hash>` to smart contract payloads. Workers must verify their local state hash matches before execution, downloading the correct state from peers via Libp2p Request-Response if empty.
 
 ## The Shared-Drive Race Condition (BFT Security Event)
-When testing a distributed network on a single physical device (e.g., Termux), running multiple Workers causes them to share the host's physical `./rootfs/data` directory. 
-Because the Gateway's Redundancy Factor (RF=2) dispatches duplicate shards simultaneously, both `tokio::spawn` worker threads attempt to overwrite `output.txt` at the exact same millisecond. 
-This read/write collision causes the Workers to return mismatched hashes to the Gateway. The Gateway's Byzantine Fault Tolerance algorithm detects this discrepancy, labels the nodes as compromised, and terminates their TCP connections. 
-**Solution:** Single-device testing requires dynamically dropping the Redundancy Factor to 1, or isolating the Worker binary execution paths.
+When testing a distributed network on a single physical device (e.g., Termux), running multiple Workers causes them to share the host's physical `./rootfs/data` directory, causing read/write collisions.
+**Solution:** Single-device testing requires isolating the Worker binary execution paths into separate directories (`worker1_dir`, `worker2_dir`).
+
+## Intra-Worker Asynchronous Corruption
+If a 64-core Worker eagerly claims multiple jobs targeting the *same* smart contract, the concurrent `tokio::spawn` threads will corrupt the `.state` file during simultaneous disk I/O.
+**Solution:** Implemented a global Lock Manager using `tokio::sync::Mutex` mapped to Contract IDs. Concurrent threads on the same worker queue patiently to mutate state sequentially.

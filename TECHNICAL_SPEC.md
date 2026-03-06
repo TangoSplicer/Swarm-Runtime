@@ -1,4 +1,4 @@
-# Swarm Runtime: Technical Specification v0.22.0
+# Swarm Runtime: Technical Specification v0.23.0
 
 ## 1. System Architecture
 * **Topology:** Physical Mesh (Libp2p), Logical Star (Gateway-Coordinator).
@@ -7,14 +7,14 @@
 * **Storage Plane:** `libp2p::kad` (Kademlia DHT for VMFS file pinning).
 * **Consensus:** Dynamic Redundancy Factor (Max: 2) + SHA-256 Output State Hashing.
 
-## 2. Distributed Data Retrieval Protocol (Phase 6)
-The Gateway acts as an asynchronous bridge between the standard HTTP web (Axum) and the asynchronous P2P mesh (Libp2p).
-1. **The Request:** CLI issues an async `GET /api/v1/data/<HASH>`.
-2. **The Bridge:** Axum generates a `tokio::sync::oneshot` channel and passes it to the Libp2p event loop via `NodeCommand::FetchFile`.
-3. **The Sweep:** The Gateway queries connected peers via `SwarmRequest::FetchData(hash)`.
-4. **The VMFS Scan:** The Worker node intercepts the request, hashes the files in its `./rootfs/data` Virtual Mesh File System, and matches the SHA-256 string.
-5. **The Stream:** The Worker returns the raw bytes in a `SwarmResponse::DataPayload`. The Gateway pushes the bytes through the oneshot channel, streaming directly back to the CLI.
+## 2. Distributed Stateful Smart Contracts (Phase 7 & 8)
+Stateful contracts execute sequentially and atomically, bypassing legacy MapReduce slicing.
+1. **State Tracking:** The Gateway maintains a global `DashMap` of the latest verified `[contract_hash -> state_hash]`.
+2. **Atomic Dispatch:** The Gateway packages the entire payload into a single atomic shard (Shard 0) and dispatches it to multiple workers to satisfy the Redundancy Factor.
+3. **Pre-Flight Sync:** The Worker compares its local `.state` hash against the Gateway's expected hash. If out of sync, it issues an internal `FetchData` request to connected peers to download the latest state array.
+4. **Memory Injection:** The `judge` module instantiates the `wasmi` environment and explicitly overwrites the linear memory buffer starting at offset `0` with the injected `.state` bytes.
+5. **Payload Offset:** To prevent state corruption, dynamic execution payloads are calculated to sit at the absolute end of the available memory buffer (`total_memory - payload_length`), keeping the static state intact.
 
 ## 3. Dynamic Polyglot Routing
-* **Zero-Extraction Edge Caching:** Massive Wasm engines (Python, Ruby, PHP) are pre-cached on Workers. The CLI sends plain text source with a `POLYGLOT:LANG` routing ID.
-* **Local Compilation:** Systems languages (Zig) are compiled to ultra-lean `wasm32-wasi` via the CLI *before* network transmission, bypassing the 2MB Libp2p Stream limit.
+* **Zero-Extraction Edge Caching:** Massive Wasm engines (Python, Ruby, PHP) are pre-cached on Workers. 
+* **Local Compilation:** Systems languages (Zig) are compiled to ultra-lean `wasm32-wasi` via the CLI.

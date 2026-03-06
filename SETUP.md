@@ -2,7 +2,10 @@
 
 ## 1. Single-Device vs Production Testing
 **CRITICAL:** If you are testing the Swarm on a single machine (e.g., multiple Termux tabs), you must avoid the Shared File System Race Condition.
-Open `components/swarm-node/src/gateway.rs` and change the `JobState` configuration to `redundancy: 1`. If testing across multiple physical devices, leave it at `redundancy: 2`.
+To simulate a true Byzantine Fault Tolerant (BFT) network on one device:
+1. Create separate directories: `mkdir worker1_dir && mkdir worker2_dir`.
+2. Run `cd worker1_dir && cargo run --manifest-path ../Cargo.toml --bin swarm-node -- start --shard 1`.
+3. Repeat for Worker 2. This isolates their Virtual File Systems.
 
 ## 2. Polyglot Runtimes (WASI Binaries)
 Workers require the following pre-cached engines in their execution directory:

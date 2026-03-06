@@ -1,15 +1,17 @@
-# Swarm Runtime: Developer User Manual (v0.22.0)
+# Swarm Runtime: Developer User Manual (v0.23.0)
 
 ## 1. Starting the Mesh
+To simulate a multi-device BFT mesh locally:
 * **Gateway:** `cargo run --bin swarm-node -- gateway --port 3000`
-* **Worker 1:** `cargo run --bin swarm-node -- start --shard 1`
-* **Worker 2:** `cargo run --bin swarm-node -- start --shard 2`
+* **Worker 1:** `cd worker1_dir && cargo run --manifest-path ../Cargo.toml --bin swarm-node -- start --shard 1`
+* **Worker 2:** `cd worker2_dir && cargo run --manifest-path ../Cargo.toml --bin swarm-node -- start --shard 2`
 
-## 2. Deploying Code
+## 2. Deploying Stateful Smart Contracts
 The CLI multiplexes deployments. Use `--lang` to route it correctly:
 * **Python:** `cargo run --bin swarm-cli -- deploy app.py --lang python`
 * **Zig (Auto-compiles):** `cargo run --bin swarm-cli -- deploy app.zig --lang zig`
 * **Raw WebAssembly:** `cargo run --bin swarm-cli -- deploy native.wasm --lang wasm`
+*(Note: Workers will automatically detect if their local state is out-of-sync and download the latest `.state` snapshot from peers before executing).*
 
 ## 3. Checking Status & Consensus
 Query the Gateway to view distributed execution status and the resulting Output Hash.

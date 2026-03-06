@@ -3,20 +3,19 @@
 
 [![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange)](https://www.rust-lang.org/)
 [![Termux](https://img.shields.io/badge/Platform-Android%20%2F%20Termux-green)](https://termux.dev/)
-[![Status](https://img.shields.io/badge/Release-v0.22.0%20(Data%20Retrieval)-blue)](https://github.com/TangoSplicer/Swarm-Runtime)
+[![Status](https://img.shields.io/badge/Release-v0.23.0%20(Stateful%20Smart%20Contracts)-blue)](https://github.com/TangoSplicer/Swarm-Runtime)
 
 Swarm Runtime turns Android devices into a fault-tolerant compute cluster. It uses **Libp2p** for mesh networking, **Axum** for a Headless REST API, and the **Wasmi** interpreter for secure, ARM64-safe sandboxed code execution.
 
-## 🚀 New in v0.22.0 (Distributed Data Retrieval Phase)
-* **📥 Kademlia DHT File Fetching:** Complete closed-loop data retrieval. The CLI can query the decentralized mesh for a specific SHA-256 output hash, and the Gateway will route the request to the correct Worker to stream the raw bytes back to the user.
-* **⚡ Fully Asynchronous CLI:** The `swarm-cli` has been upgraded to a pure `tokio` asynchronous runtime, allowing non-blocking HTTP streaming for massive file downloads.
-* **🛡️ Hardened BFT Race-Condition Security:** The network strictly enforces Byzantine Fault Tolerance. If two local nodes collide while writing to the same physical disk during testing, the Gateway dynamically detects the resulting Hash Collision and isolates the compromised nodes.
-* **📦 Native Zig & Polyglot Engine:** Execute raw `.wasm`, native `.zig`, or interpreted scripts (Python, JS, Lua, Ruby, PHP, SQLite) seamlessly across the edge.
+## 🚀 New in v0.23.0 (Stateful Smart Contracts & P2P Sync)
+* **🧠 Persistent Stateful Actors:** WebAssembly linear memory is now dynamically extracted and injected across executions. Smart contracts can preserve their state (`.state` files) indefinitely.
+* **🔗 P2P Pre-Flight State Synchronization:** New workers joining the mesh automatically detect if their local contract state is empty or out-of-date. They dynamically query the Kademlia DHT and fetch the latest 1MB memory snapshot from peers *before* executing a new job.
+* **⚖️ Atomic Routing & Deduplication:** The Gateway dynamically distinguishes between stateless MapReduce jobs and Stateful Smart Contracts, routing atomic payloads to ensure deterministic execution, while workers utilize highly concurrent `DashSet` caching to prevent redundant double-claiming.
+* **📥 Kademlia DHT File Fetching:** Complete closed-loop data retrieval for both state files and standard `output.txt` artifacts.
 
 ## 📦 Architecture: The Polyglot & Compiled Pipeline
-1. **Queue:** Client submits raw code (e.g., `app.rb`) or local source (`test.zig`). The CLI transparently auto-compiles Zig to Wasm locally, or sets an Edge Cache ID.
+1. **Queue:** Client submits code via CLI.
 2. **Profile:** Workers broadcast `sysinfo` hardware metrics every 10s via Gossipsub. 
-3. **Dispatch:** Gateway executes Weighted Sharding, duplicates shards for Redundancy, and securely Unicasts them via TCP Libp2p streams.
-4. **Compute:** Workers boot the WASI environment, execute the code in a chroot jail, and hash the output state/files.
-5. **Consensus:** Gateway waits for Redundant Hashes to match, establishing cryptographic state agreement.
-6. **Retrieval:** The user requests the Consensus Hash, and the network streams the resulting file back.
+3. **Dispatch & Sync:** Gateway attaches the latest known state hash to the payload. Workers verify their local state matches, downloading peer states if necessary.
+4. **Compute:** Workers boot the WASI environment, inject the previous memory state, execute the code, and hash the resulting state.
+5. **Consensus:** Gateway enforces Byzantine Fault Tolerance (BFT), requiring Redundant Hashes to match exactly.
