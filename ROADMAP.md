@@ -1,21 +1,23 @@
 # Swarm Runtime: Roadmap to V1.0 🚀
 
-## Phase 1 to 6: Robustness, Polyglot, & Data Retrieval - ✅ COMPLETED
+## Phase 1 to 8: Core Engine, BFT, & State Sync - ✅ COMPLETED
 - Fault Tolerance, Async Axum API, Hash-Based Consensus (SHA-256).
-- Wasm execution via `wasmi` with 50B Gas Limits and `cap-std` chroot jails.
-- Edge Cached Polyglot: Python, JS, Lua, Ruby, PHP, SQLite.
-- Distributed DHT Fetching over oneshot channels.
+- Polyglot edge execution with `wasmi` and `cap-std` sandboxing.
+- Persistent Stateful Actors & Asynchronous `tokio::sync::Mutex` locks.
+- P2P Pre-Flight State Synchronization & Atomic Smart Contract Routing.
 
-## Phase 7: Persistent Stateful Actors - ✅ COMPLETED
-- **Smart Contracts:** Persistent state trees via `wasmi` linear memory extraction.
-- **Dynamic Memory Offsets:** Safely injected payloads without overwriting static heap data.
-- **Thread Safety:** Asynchronous `tokio::sync::Mutex` locks for highly concurrent disk I/O.
+## Phase 9: The Global Mesh & Cryptographic Identity - 🚧 NEXT
+- **Unique Peer Identities:** Replace the hardcoded `GATEWAY_SECRET_SEED` with dynamically generated `.swarm_identity` files for every node.
+- **Public Cloud Gateway:** Deploy the `swarm-node` Gateway to a public Oracle Cloud VPS (Always Free Tier) to provide a permanent anchor for the Kademlia DHT.
+- **NAT Traversal & Mobile Mesh:** Connect Termux mobile edge workers to the public Gateway over cellular networks to prove real-world distributed BFT consensus.
 
-## Phase 8: P2P State Synchronization - ✅ COMPLETED
-- **Job Deduplication:** `DashSet` caching to prevent workers from computing redundant tasks locally.
-- **Atomic Routing:** Gateway bypasses MapReduce logic for deterministic Smart Contract consensus.
-- **Pre-Flight Sync:** Late-joining nodes dynamically heal their empty hard drives by fetching `.state` snapshots from connected peers over Libp2p.
+## Phase 10: Swarm Hardening (Reliability) - ⏳ PLANNED
+- **Memory Limits & Pruning:** Implement LRU caches and TTL sweeps for `DashMap` storage to prevent Out-Of-Memory (OOM) crashes on edge nodes.
+- **Asynchronous Backpressure:** Transition to bounded `tokio::sync::mpsc::channel` queues to gracefully reject traffic floods.
+- **Network Resilience:** Implement strict network timeouts and retry logic to handle cellular packet loss.
 
-## Phase 9: The Final Frontier - 🚧 NEXT
-- **Polyglot State Sync (WASI VMFS):** Upgrade the synchronization engine to support transferring complex sandboxed files (like `sqlite.db`) across the mesh, bringing persistent state to Python, PHP, and SQL scripts.
-- **Global Deployment:** Move beyond local Termux testing by deploying the Gateway to a cloud VPS and connecting mobile workers via public IPs.
+## Phase 11: Enterprise Federation (Production Readiness) - ⏳ PLANNED
+- **Gateway Replication:** Eliminate the single point of failure by allowing backup Gateways to instantly take over scheduling if the primary goes offline.
+- **WASM Compilation Caching:** Cache compiled native machine code locally so subsequent smart contract calls execute instantly.
+- **Observability:** Add a `/metrics` endpoint to export CPU, memory, and mesh telemetry for open-source dashboards.
+- **Polyglot State Sync (WASI VMFS):** Expand the state synchronization engine to support complex sandboxed file transfers (like `sqlite.db`) across the mesh.
