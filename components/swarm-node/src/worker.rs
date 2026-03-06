@@ -3,13 +3,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use libp2p::{swarm::SwarmEvent, mdns, request_response, kad};
 use futures::StreamExt;
 use std::sync::Arc;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use base64::{engine::general_purpose, Engine as _};
 use ed25519_dalek::{VerifyingKey, Signature, Verifier};
 use sysinfo::System;
 use std::fs;
 use sha2::{Sha256, Digest};
-use tokio::sync::Mutex; // NEW: Bring in Tokio's async Mutex
+use tokio::sync::Mutex;
+use std::collections::HashMap;
 
 use synapse::{SynapseNode, SynapseBehaviorEvent, SwarmRequest, SwarmResponse};
 use judge::Judge;
@@ -26,8 +27,13 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
     let pending_c = pending_dials.clone();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<NodeCommand>();
 
-    // NEW: Global Lock Manager for Stateful Smart Contracts
     let state_locks = Arc::new(DashMap::<String, Arc<Mutex<()>>>::new());
+    let seen_jobs = Arc::new(DashSet::<String>::new());
+    
+    // PHASE 8: P2P Synchronizer Assets
+    let connected_peers = Arc::new(DashSet::<libp2p::PeerId>::new());
+    let (internal_fetch_tx, mut internal_fetch_rx) = tokio::sync::mpsc::unbounded_channel::<(String, libp2p::PeerId, tokio::sync::oneshot::Sender<Vec<u8>>)>();
+    let mut fetch_callbacks = HashMap::<libp2p::request_response::OutboundRequestId, tokio::sync::oneshot::Sender<Vec<u8>>>::new();
 
     let worker_tx_tel = tx.clone();
     let my_peer_id = local_peer_id.to_string();
@@ -52,11 +58,15 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
 
     loop {
         tokio::select! {
+            Some((hash, target_peer, reply_tx)) = internal_fetch_rx.recv() => {
+                let req_id = p2p_node.send_request(&target_peer, SwarmRequest::FetchData(hash));
+                fetch_callbacks.insert(req_id, reply_tx);
+            },
             Some(cmd) = rx.recv() => {
                 match cmd {
                     NodeCommand::Unicast(peer, req) => { let _ = p2p_node.send_request(&peer, req); },
                     NodeCommand::Broadcast(msg) => { let _ = p2p_node.publish_to_topic("swarm-control-plane", msg); },
-                    NodeCommand::FetchFile(_, _) => {}, // Ignored: Gateway-only command
+                    NodeCommand::FetchFile(_, _) => {}, 
                         NodeCommand::Disconnect(peer) => {
                         println!("⛔ BANNING PEER: {}", peer);
                         let _ = p2p_node.swarm.disconnect_peer_id(peer);
@@ -92,8 +102,15 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
                         }
                     },
                     SwarmEvent::Behaviour(SynapseBehaviorEvent::ReqRes(request_response::Event::Message { peer, message })) => {
-                        if let request_response::Message::Request { request: SwarmRequest::FetchData(hash), channel, .. } = message {
-                                println!("📥 Received FetchData request for Hash: [{}]", hash);
+                        if let request_response::Message::Response { request_id, response } = message {
+                            // Intercept P2P State Downloads
+                            if let Some(tx) = fetch_callbacks.remove(&request_id) {
+                                if let SwarmResponse::DataPayload(bytes) = response {
+                                    let _ = tx.send(bytes);
+                                }
+                            }
+                        } else if let request_response::Message::Request { request: SwarmRequest::FetchData(hash), channel, .. } = message {
+                                println!("📥 Received FetchData request for Hash: [{}]", &hash[..8]);
                                 let mut file_bytes = Vec::new();
 
                                 if let Ok(entries) = std::fs::read_dir("./rootfs/data") {
@@ -110,7 +127,7 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
                                 }
 
                                 if file_bytes.is_empty() {
-                                    println!("❌ File not found in VMFS for Hash: [{}]", hash);
+                                    println!("❌ File not found in VMFS for Hash: [{}]", &hash[..8]);
                                     p2p_node.send_response(channel, SwarmResponse::Error("File not found in VMFS".to_string()));
                                 } else {
                                     println!("📤 Streaming {} bytes back to Gateway...", file_bytes.len());
@@ -132,15 +149,34 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
                                     let signature = Signature::from_bytes(&sig_bytes);
                                     if verifying_key.verify(message_to_verify.as_bytes(), &signature).is_ok() {
                                         if let Ok(shard_data) = serde_json::from_str::<Shard>(&envelope.payload_json) {
+                                            
+                                            let job_id_str = shard_data.parent_task_id.to_string();
+                                            if seen_jobs.contains(&job_id_str) {
+                                                println!("⏭️ Skipping Shard {} (Already computing a shard for Job [{}...])", shard_data.shard_index, &job_id_str[..8]);
+                                                continue; 
+                                            }
+                                            seen_jobs.insert(job_id_str);
+
                                             println!("🔒 Verified & Claiming Shard {}", shard_data.shard_index);
 
                                             let worker_tx = tx.clone();
                                             let gateway_id = peer;
-                                            // Pass a clone of the lock manager into the Tokio thread
                                             let locks_clone = state_locks.clone();
+                                            
+                                            let connected_peers_clone = connected_peers.clone();
+                                            let internal_fetch_tx_clone = internal_fetch_tx.clone();
 
                                             tokio::spawn(async move {
-                                                let polyglot_id = if shard_data.wasm_image.starts_with("POLYGLOT:") { shard_data.wasm_image.clone() } else { "NONE".to_string() };
+                                                
+                                                // Extract expected state hash from payload
+                                                let mut wasm_b64 = shard_data.wasm_image.clone();
+                                                let mut expected_state_hash = None;
+                                                if let Some(idx) = wasm_b64.find("|STATE:") {
+                                                    expected_state_hash = Some(wasm_b64[idx + 7..].to_string());
+                                                    wasm_b64 = wasm_b64[..idx].to_string();
+                                                }
+                                                
+                                                let polyglot_id = if wasm_b64.starts_with("POLYGLOT:") { wasm_b64.clone() } else { "NONE".to_string() };
                                                 let wasm_result = match polyglot_id.as_str() {
                                                     "POLYGLOT:PYTHON" => Ok(std::fs::read("python.wasm").unwrap_or_default()),
                                                     "POLYGLOT:JS" => Ok(std::fs::read("qjs.wasm").unwrap_or_default()),
@@ -148,7 +184,7 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
                                                     "POLYGLOT:RUBY" => Ok(std::fs::read("ruby.wasm").unwrap_or_default()),
                                                     "POLYGLOT:PHP" => Ok(std::fs::read("php.wasm").unwrap_or_default()),
                                                     "POLYGLOT:SQLITE" => Ok(std::fs::read("sqlite.wasm").unwrap_or_default()),
-                                                    _ => general_purpose::STANDARD.decode(&shard_data.wasm_image),
+                                                    _ => general_purpose::STANDARD.decode(&wasm_b64),
                                                 };
                                                 
                                                 if let Ok(wasm) = wasm_result {
@@ -157,11 +193,41 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
                                                     let contract_id = hex::encode(contract_hasher.finalize());
                                                     let state_path = format!("./rootfs/data/{}.state", contract_id);
                                                     
-                                                    // --- ASYNC MUTEX LOCK ---
-                                                    // This ensures if a worker claims Shard 0 and Shard 1 of the same contract,
-                                                    // they queue up and execute sequentially, preserving state integrity!
                                                     let contract_lock = locks_clone.entry(contract_id.clone()).or_insert_with(|| Arc::new(Mutex::new(()))).value().clone();
                                                     let _guard = contract_lock.lock().await;
+
+                                                    // --- PHASE 8: P2P PRE-FLIGHT SYNC ---
+                                                    if let Some(expected_hash) = expected_state_hash {
+                                                        let mut needs_download = true;
+                                                        if let Ok(local_state) = fs::read(&state_path) {
+                                                            let mut hasher = Sha256::new();
+                                                            hasher.update(&local_state);
+                                                            if hex::encode(hasher.finalize()) == expected_hash {
+                                                                needs_download = false;
+                                                            }
+                                                        }
+                                                        
+                                                        if needs_download {
+                                                            println!("🔄 State Out-of-Sync! Fetching latest state [{}] from peers...", &expected_hash[..8]);
+                                                            let mut success = false;
+                                                            let peers: Vec<libp2p::PeerId> = connected_peers_clone.iter().map(|p| *p).collect();
+                                                            
+                                                            for p in peers {
+                                                                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                                                                let _ = internal_fetch_tx_clone.send((expected_hash.clone(), p, reply_tx));
+                                                                if let Ok(Ok(bytes)) = tokio::time::timeout(Duration::from_secs(5), reply_rx).await {
+                                                                    if fs::write(&state_path, &bytes).is_ok() {
+                                                                        println!("✅ Successfully synchronized state [{}] from peer {}", &expected_hash[..8], p);
+                                                                        success = true;
+                                                                        break;
+                                                                    }
+                                                                }
+                                                            }
+                                                            if !success {
+                                                                println!("❌ Failed to synchronize state from network. Proceeding with local state.");
+                                                            }
+                                                        }
+                                                    }
 
                                                     let previous_state = fs::read(&state_path).ok();
                                                     if previous_state.is_some() {
@@ -173,8 +239,14 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
                                                     match judge.execute(&wasm, &shard_data.data, &polyglot_id, previous_state.as_deref()) {
                                                         Ok((res, mut hash, new_state_opt)) => {
                                                             let sandbox_dir = "./rootfs/data";
+                                                            let mut actual_state_hash = hash.clone();
 
                                                             if let Some(state_bytes) = new_state_opt {
+                                                                // Calculate true file hash for DHT pinning
+                                                                let mut state_hasher = Sha256::new();
+                                                                state_hasher.update(&state_bytes);
+                                                                actual_state_hash = hex::encode(state_hasher.finalize());
+                                                                
                                                                 if let Err(e) = fs::write(&state_path, state_bytes) {
                                                                     println!("⚠️ Failed to save state to VMFS: {}", e);
                                                                 } else {
@@ -193,17 +265,22 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
                                                                                 let file_hash = format!("{:x}", hasher.finalize());
                                                                                 
                                                                                 let _ = worker_tx.send(NodeCommand::PinFile(file_hash.clone()));
-                                                                                hash = file_hash;
+                                                                                hash = file_hash; // Preserve output.txt hash if WASI
                                                                             }
                                                                         }
                                                                     }
                                                                 }
                                                             }
 
-                                                            let short_hash = if hash.len() >= 8 { &hash[..8] } else { &hash };
-                                                            println!("✅ Result: {} | Output Hash: [{}]", res, short_hash);
+                                                            let short_hash = if actual_state_hash.len() >= 8 { &actual_state_hash[..8] } else { &actual_state_hash };
+                                                            println!("✅ Result: {} | True State Hash: [{}]", res, short_hash);
 
-                                                            let result_obj = ShardResult { job_id: shard_data.parent_task_id, shard_index: shard_data.shard_index, result: res, result_hash: hash };
+                                                            let result_obj = ShardResult { 
+                                                                job_id: shard_data.parent_task_id, 
+                                                                shard_index: shard_data.shard_index, 
+                                                                result: res, 
+                                                                result_hash: actual_state_hash // FIX: Gateway receives actual state file hash
+                                                            };
                                                             let req = SwarmRequest::SubmitResult(serde_json::to_string(&result_obj).unwrap());
                                                             let _ = worker_tx.send(NodeCommand::Unicast(gateway_id, req));
                                                         },
@@ -214,7 +291,6 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
                                                             let _ = worker_tx.send(NodeCommand::Unicast(gateway_id, req));
                                                         }
                                                     }
-                                                    // _guard goes out of scope here, releasing the lock for the next shard!
                                                 }
                                             });
                                         }
@@ -225,10 +301,12 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey) -> Result<()
                     },
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                         println!("📡 CONNECTED: {}", peer_id);
+                        connected_peers.insert(peer_id);
                         pending_c.remove(&peer_id);
                     },
                     SwarmEvent::ConnectionClosed { peer_id, .. } => {
                         println!("📉 DISCONNECTED: {}", peer_id);
+                        connected_peers.remove(&peer_id);
                     },
                     _ => {}
                 }

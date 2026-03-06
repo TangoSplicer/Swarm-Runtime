@@ -1,6 +1,6 @@
-feat(runtime): implement Phase 7 Persistent Stateful Actors & BFT thread safety
+feat(runtime): implement Phase 8 P2P Pre-Flight State Synchronization
 
-- Judge Engine: Added WebAssembly linear memory extraction and injection to enable persistent `.state` files across executions.
-- Memory Safety: Replaced the hardcoded 1MB legacy pointer with a dynamic offset algorithm, placing dataset payloads at the absolute end of the memory buffer to prevent state collisions.
-- Worker Concurrency: Implemented a global `tokio::sync::Mutex` lock manager in `worker.rs` to guarantee thread-safe intra-worker file I/O for smart contract states.
-- Consensus Validation: Validated Byzantine Fault Tolerance (BFT) redundancy using isolated worker directories to accurately simulate physical multi-device hardware environments.
+- Gateway Routing: Upgraded scheduler to detect stateful WebAssembly payloads and dynamically route atomic, un-sharded invocations to multiple peers.
+- Global State Tracker: Gateway now tracks the latest verified `.state` hash for every smart contract and attaches it to outbound job payloads.
+- P2P State Sync: Workers now parse expected state hashes before execution. If local state is missing or outdated, workers dynamically fetch the 1MB memory snapshot from connected peers via the Kademlia DHT before executing.
+- Auto-Scaling Redundancy: Gateway dynamically scales redundancy factors based on live peer availability to prevent SLA deadlocks.

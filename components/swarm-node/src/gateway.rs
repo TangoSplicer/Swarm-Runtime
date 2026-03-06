@@ -3,10 +3,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use libp2p::{swarm::SwarmEvent, mdns, request_response, gossipsub};
 use futures::StreamExt;
 use axum::{
-    extract::{State, Json, Path}, 
-    routing::{post, get}, 
-    Router, 
-    response::Html, 
+    extract::{State, Json, Path},
+    routing::{post, get},
+    Router, response::Html,
     http::StatusCode
 };
 use std::sync::Arc;
@@ -15,38 +14,42 @@ use dashmap::DashMap;
 use uuid::Uuid;
 use tokio::sync::Mutex;
 use ed25519_dalek::{SigningKey, Signer};
-
+use sha2::{Sha256, Digest};
 use synapse::{SynapseNode, SynapseBehaviorEvent, SwarmRequest, SwarmResponse};
 use crate::types::*;
 
 pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
     let mut p2p_node = SynapseNode::new(4000).await?;
     let local_peer_id = *p2p_node.swarm.local_peer_id();
-    p2p_node.subscribe("swarm-control-plane")?; 
+    p2p_node.subscribe("swarm-control-plane")?;
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<NodeCommand>();
-    
+
     let jobs = Arc::new(DashMap::new());
-    let stats = Arc::new(Mutex::new(SwarmStatus { 
-        version: "0.19.0".to_string(), role: "GATEWAY".to_string(), peers_count: 0, peers: HashSet::new(),
+    let stats = Arc::new(Mutex::new(SwarmStatus {
+        version: "0.22.1".to_string(), role: "GATEWAY".to_string(), peers_count: 0, peers: HashSet::new(),
     }));
     let health_registry = Arc::new(DashMap::new());
     let pending_dials = Arc::new(DashMap::<libp2p::PeerId, Instant>::new());
     let telemetry_registry = Arc::new(DashMap::<libp2p::PeerId, Telemetry>::new());
     
-    let shared_state = Arc::new(AppState { 
-        node_tx: tx.clone(), jobs: jobs.clone(), stats: stats.clone(), 
+    // PHASE 8: Global State Tracker
+    let contract_states = Arc::new(DashMap::<String, String>::new());
+
+    let shared_state = Arc::new(AppState {
+        node_tx: tx.clone(), jobs: jobs.clone(), stats: stats.clone(),
         health_registry: health_registry.clone(), pending_dials: pending_dials.clone(),
         telemetry_registry: telemetry_registry.clone(),
         signing_key: signing_key.clone(),
     });
-    let (jobs_c, stat_c, health_c, pending_c, tel_c) = (jobs.clone(), stats.clone(), health_registry.clone(), pending_dials.clone(), telemetry_registry.clone());
-    
+    let (jobs_c, stat_c, health_c, pending_c, tel_c, contract_states_c) = 
+        (jobs.clone(), stats.clone(), health_registry.clone(), pending_dials.clone(), telemetry_registry.clone(), contract_states.clone());
+
     tokio::spawn(async move {
         let mut sla_interval = tokio::time::interval(Duration::from_secs(3));
         let mut req_to_hash: HashMap<libp2p::request_response::OutboundRequestId, String> = HashMap::new();
-    let mut hash_to_tx: HashMap<String, tokio::sync::oneshot::Sender<Option<Vec<u8>>>> = HashMap::new();
-    
-    loop {
+        let mut hash_to_tx: HashMap<String, tokio::sync::oneshot::Sender<Option<Vec<u8>>>> = HashMap::new();
+
+        loop {
             tokio::select! {
                 _ = sla_interval.tick() => {
                     let mut re_routes = Vec::new();
@@ -56,19 +59,19 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                     for entry in jobs_c.iter_mut() {
                         let mut job = entry.value().lock().await;
                         let job_id = *entry.key();
-                        
+
                         if let Some(dataset) = job.unassigned_dataset.take() {
                             let s = stat_c.lock().await;
                             let active_peers: Vec<_> = s.peers.iter().copied().collect();
 
                             if active_peers.is_empty() || tel_c.is_empty() {
-                                job.unassigned_dataset = Some(dataset); 
+                                job.unassigned_dataset = Some(dataset);
                                 continue;
                             }
 
                             job.redundancy = 2.min(active_peers.len());
                             println!("🧠 SCHEDULER: Optimizing workload with Redundancy Factor {}...", job.redundancy);
-                            
+
                             let mut peer_fitness = Vec::new();
                             let mut total_fitness = 0.0;
                             for peer in &active_peers {
@@ -80,46 +83,87 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                             }
 
                             peer_fitness.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                            job.expected_shards = active_peers.len();
-                            let mut start_idx = 0;
+                            
+                            let is_stateful = !job.wasm_image.is_empty() && job.wasm_image != "NONE";
 
-                            for (i, (primary_peer, fitness)) in peer_fitness.iter().enumerate() {
-                                if start_idx >= dataset.len() { break; } 
+                            if is_stateful {
+                                job.expected_shards = 1;
                                 
-                                let weight = fitness / total_fitness;
-                                let mut chunk_size = (dataset.len() as f32 * weight).floor() as usize;
-
-                                if chunk_size == 0 && dataset.len() >= active_peers.len() { chunk_size = 1; }
-                                if i == active_peers.len() - 1 { chunk_size = dataset.len() - start_idx; }
-                                if start_idx + chunk_size > dataset.len() { chunk_size = dataset.len() - start_idx; }
-
-                                let chunk = &dataset[start_idx..start_idx + chunk_size];
-                                start_idx += chunk_size;
-
+                                // PHASE 8: Attach Latest State Hash to Payload
+                                let mut hasher = Sha256::new();
+                                hasher.update(job.wasm_image.as_bytes());
+                                let contract_key = hex::encode(hasher.finalize());
+                                
+                                let mut out_wasm_image = job.wasm_image.clone();
+                                if let Some(latest_state) = contract_states_c.get(&contract_key) {
+                                    out_wasm_image = format!("{}|STATE:{}", out_wasm_image, latest_state.value());
+                                }
+                                
+                                let primary_peer = peer_fitness[0].0;
                                 let shard = Shard {
                                     parent_task_id: job_id,
-                                    shard_index: i as u32,
-                                    total_shards: active_peers.len() as u32,
-                                    data: chunk.to_vec(),
-                                    wasm_image: job.wasm_image.clone(),
+                                    shard_index: 0,
+                                    total_shards: 1,
+                                    data: dataset.clone(),
+                                    wasm_image: out_wasm_image,
                                     target_peer: Some(primary_peer.to_string()),
                                 };
 
                                 let mut peer_assignments = HashMap::new();
-                                
-                                peer_assignments.insert(*primary_peer, Instant::now());
-                                new_dispatches.push((*primary_peer, shard.clone()));
+                                peer_assignments.insert(primary_peer, Instant::now());
+                                new_dispatches.push((primary_peer, shard.clone()));
 
-                                if job.redundancy > 1 {
-                                    let secondary_peer = peer_fitness[(i + 1) % peer_fitness.len()].0;
+                                if job.redundancy > 1 && peer_fitness.len() > 1 {
+                                    let secondary_peer = peer_fitness[1].0;
                                     peer_assignments.insert(secondary_peer, Instant::now());
                                     new_dispatches.push((secondary_peer, shard.clone()));
                                 }
 
-                                job.shards_data.insert(i as u32, shard.clone());
-                                job.assignments.insert(i as u32, peer_assignments);
+                                job.shards_data.insert(0, shard.clone());
+                                job.assignments.insert(0, peer_assignments);
+
+                            } else {
+                                job.expected_shards = active_peers.len();
+                                let mut start_idx = 0;
+
+                                for (i, (primary_peer, fitness)) in peer_fitness.iter().enumerate() {
+                                    if start_idx >= dataset.len() { break; }
+
+                                    let weight = fitness / total_fitness;
+                                    let mut chunk_size = (dataset.len() as f32 * weight).floor() as usize;
+
+                                    if chunk_size == 0 && dataset.len() >= active_peers.len() { chunk_size = 1; }
+                                    if i == active_peers.len() - 1 { chunk_size = dataset.len() - start_idx; }
+                                    if start_idx + chunk_size > dataset.len() { chunk_size = dataset.len() - start_idx; }
+
+                                    let chunk = &dataset[start_idx..start_idx + chunk_size];
+                                    start_idx += chunk_size;
+
+                                    let shard = Shard {
+                                        parent_task_id: job_id,
+                                        shard_index: i as u32,
+                                        total_shards: active_peers.len() as u32,
+                                        data: chunk.to_vec(),
+                                        wasm_image: job.wasm_image.clone(),
+                                        target_peer: Some(primary_peer.to_string()),
+                                    };
+
+                                    let mut peer_assignments = HashMap::new();
+
+                                    peer_assignments.insert(*primary_peer, Instant::now());
+                                    new_dispatches.push((*primary_peer, shard.clone()));
+
+                                    if job.redundancy > 1 {
+                                        let secondary_peer = peer_fitness[(i + 1) % peer_fitness.len()].0;
+                                        peer_assignments.insert(secondary_peer, Instant::now());
+                                        new_dispatches.push((secondary_peer, shard.clone()));
+                                    }
+
+                                    job.shards_data.insert(i as u32, shard.clone());
+                                    job.assignments.insert(i as u32, peer_assignments);
+                                }
                             }
-                            continue; 
+                            continue;
                         }
 
                         let is_complete = job.verified_results.len() >= job.expected_shards;
@@ -177,12 +221,11 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                         let _ = tx.send(NodeCommand::Unicast(peer, req));
                     }
                 },
-                Some(cmd) = rx.recv() => { 
+                Some(cmd) = rx.recv() => {
                     match cmd {
                         NodeCommand::Unicast(peer, req) => { let _ = p2p_node.send_request(&peer, req); },
                         NodeCommand::Broadcast(msg) => { let _ = p2p_node.publish_to_topic("swarm-control-plane", msg); },
                         NodeCommand::Disconnect(peer) => { let _ = p2p_node.swarm.disconnect_peer_id(peer); },
-                        // FIX: Exhaustive match requirement. Gateway gracefully ignores file pins.
                         NodeCommand::PinFile(_) => {}
                         NodeCommand::FetchFile(hash, reply_tx) => {
                             let peers = stat_c.lock().await.peers.clone();
@@ -191,7 +234,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                                 let req_id = p2p_node.send_request(&peer, SwarmRequest::FetchData(hash.clone()));
                                 req_to_hash.insert(req_id, hash.clone());
                             }
-                        } 
+                        }
                     }
                 },
                 event = p2p_node.swarm.select_next_some() => {
@@ -221,30 +264,30 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                         },
                         SwarmEvent::Behaviour(SynapseBehaviorEvent::ReqRes(request_response::Event::Message { peer, message })) => {
                             if let request_response::Message::Response { request_id, response } = message {
-                            if let Some(hash) = req_to_hash.remove(&request_id) {
-                                if let SwarmResponse::DataPayload(bytes) = response {
-                                    if let Some(tx) = hash_to_tx.remove(&hash) {
-                                        let _ = tx.send(Some(bytes));
+                                if let Some(hash) = req_to_hash.remove(&request_id) {
+                                    if let SwarmResponse::DataPayload(bytes) = response {
+                                        if let Some(tx) = hash_to_tx.remove(&hash) {
+                                            let _ = tx.send(Some(bytes));
+                                        }
                                     }
                                 }
-                            }
-                        } else if let request_response::Message::Request { request: SwarmRequest::SubmitResult(json_payload), channel, .. } = message {
+                            } else if let request_response::Message::Request { request: SwarmRequest::SubmitResult(json_payload), channel, .. } = message {
                                 p2p_node.send_response(channel, SwarmResponse::Ack);
-                                
+
                                 if let Ok(res_data) = serde_json::from_str::<ShardResult>(&json_payload) {
                                     health_c.remove(&peer);
-                                    if let Some(job_ref) = jobs_c.get(&res_data.job_id) { 
+                                    if let Some(job_ref) = jobs_c.get(&res_data.job_id) {
                                         let mut guard = job_ref.value().lock().await;
-                                        
+
                                         if guard.verified_results.contains_key(&res_data.shard_index) { continue; }
 
                                         let is_consensus_ready = {
                                             let shard_results = guard.raw_results.entry(res_data.shard_index).or_insert_with(HashMap::new);
                                             shard_results.insert(peer, (res_data.result, res_data.result_hash.clone()));
-                                            
+
                                             let display_hash = if res_data.result_hash.len() >= 8 { &res_data.result_hash[..8] } else { &res_data.result_hash };
                                             println!("📩 Received Result Hash: [{}] from {}", display_hash, peer);
-                                            
+
                                             shard_results.len() >= guard.redundancy
                                         };
 
@@ -255,11 +298,20 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
 
                                                 if unique_results.len() == 1 {
                                                     let (final_result, final_hash) = &unique_results[0];
-                                                    
+
                                                     let final_display = if final_hash.len() >= 8 { &final_hash[..8] } else { final_hash };
                                                     println!("✅ HASH CONSENSUS REACHED: Shard {} state verified [{}]", res_data.shard_index, final_display);
-                                                    
+
                                                     guard.verified_results.insert(res_data.shard_index, (*final_result, final_hash.clone()));
+                                                    
+                                                    // PHASE 8: Store verified state hash
+                                                    let is_stateful = !guard.wasm_image.is_empty() && guard.wasm_image != "NONE";
+                                                    if is_stateful && res_data.shard_index == 0 {
+                                                        let mut hasher = Sha256::new();
+                                                        hasher.update(guard.wasm_image.as_bytes());
+                                                        let contract_key = hex::encode(hasher.finalize());
+                                                        contract_states_c.insert(contract_key, final_hash.clone());
+                                                    }
                                                 } else {
                                                     println!("🚨 HASH COLLISION DETECTED! State mutation mismatch on Shard {}.", res_data.shard_index);
                                                     for (p, _) in shard_results.iter() {
@@ -280,9 +332,9 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                         },
                         SwarmEvent::ConnectionClosed { peer_id, .. } => {
                             let mut s = stat_c.lock().await;
-                            if s.peers.remove(&peer_id) { 
-                                s.peers_count = s.peers.len(); 
-                                println!("📉 DISCONNECTED: {}", peer_id); 
+                            if s.peers.remove(&peer_id) {
+                                s.peers_count = s.peers.len();
+                                println!("📉 DISCONNECTED: {}", peer_id);
                             }
                             tel_c.remove(&peer_id);
                         },
@@ -299,20 +351,20 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
         .route("/api/v1/jobs/:id", get(get_job_status))
         .route("/api/v1/data/:hash", get(fetch_data))
         .layer(axum::extract::DefaultBodyLimit::max(50_000_000)).with_state(shared_state);
-        
+
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     println!("Gateway Active: http://localhost:{}", port);
     axum::Server::bind(&addr).serve(app.into_make_service()).await?;
-    
+
     Ok(())
 }
 
 async fn submit_job(State(state): State<Arc<AppState>>, Json(payload): Json<ShardedDeployRequest>) -> (StatusCode, Json<JobSubmitResponse>) {
     let task_id = Uuid::new_v4();
-    
+
     let job_state = JobState {
-        expected_shards: 0, 
-        redundancy: 2, 
+        expected_shards: 0,
+        redundancy: 2,
         raw_results: HashMap::new(),
         verified_results: HashMap::new(),
         created_at: Instant::now(),
@@ -321,11 +373,11 @@ async fn submit_job(State(state): State<Arc<AppState>>, Json(payload): Json<Shar
         unassigned_dataset: Some(payload.dataset.clone()),
         wasm_image: payload.wasm_base64,
     };
-    
+
     state.jobs.insert(task_id, Arc::new(Mutex::new(job_state)));
 
     println!("📥 Job Queued: {} with {} Complex Items", task_id, payload.dataset.len());
-    
+
     (StatusCode::ACCEPTED, Json(JobSubmitResponse {
         job_id: task_id.to_string(),
         status: "pending_scheduler".to_string()
@@ -335,7 +387,7 @@ async fn submit_job(State(state): State<Arc<AppState>>, Json(payload): Json<Shar
 async fn get_job_status(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>) -> (StatusCode, Json<JobStatusResponse>) {
     if let Some(job_ref) = state.jobs.get(&id) {
         let guard = job_ref.lock().await;
-        
+
         if guard.unassigned_dataset.is_some() {
             return (StatusCode::ACCEPTED, Json(JobStatusResponse {
                 status: "awaiting_telemetry".to_string(), total_sum: 0, breakdown: vec![], hashes: vec![], missing_shards: vec![]
@@ -344,10 +396,10 @@ async fn get_job_status(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>
 
         let is_complete = guard.verified_results.len() >= guard.expected_shards;
         let sum: i32 = guard.verified_results.values().map(|(res, _)| *res).sum();
-        
+
         let breakdown: Vec<(u32, i32)> = guard.verified_results.iter().map(|(k, v)| (*k, v.0)).collect();
         let hashes: Vec<(u32, String)> = guard.verified_results.iter().map(|(k, v)| (*k, v.1.clone())).collect();
-        
+
         let received_indices: Vec<u32> = guard.verified_results.keys().copied().collect();
         let missing_indices: Vec<u32> = (0..guard.expected_shards as u32).filter(|i| !received_indices.contains(i)).collect();
 
@@ -365,7 +417,7 @@ async fn dashboard(State(_state): State<Arc<AppState>>) -> Html<String> {
     Html(r#"
         <div style="font-family: sans-serif; padding: 2rem;">
             <h1>🐝 Swarm Runtime Gateway</h1>
-            <p><strong>Version:</strong> v0.19.0 (WASI Virtual File System)</p>
+            <p><strong>Version:</strong> v0.22.1 (Stateful Sync)</p>
         </div>
     "#.to_string())
 }
@@ -373,7 +425,7 @@ async fn dashboard(State(_state): State<Arc<AppState>>) -> Html<String> {
 async fn fetch_data(State(state): State<Arc<AppState>>, Path(hash): Path<String>) -> (StatusCode, Vec<u8>) {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let _ = state.node_tx.send(NodeCommand::FetchFile(hash.clone(), tx));
-    
+
     match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
         Ok(Ok(Some(bytes))) => (StatusCode::OK, bytes),
         _ => (StatusCode::NOT_FOUND, b"File not found on network".to_vec()),
