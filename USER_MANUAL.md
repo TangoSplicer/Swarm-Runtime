@@ -1,10 +1,13 @@
-# Swarm Runtime: Developer User Manual (v0.23.0)
+# Swarm Runtime: Developer User Manual (v0.24.0)
 
-## 1. Starting the Mesh
+## 1. Starting the Mesh & Cryptographic Identity
+As of v0.24.0, every node dynamically generates a permanent cryptographic identity (`.swarm_identity`) on its first boot. 
+
 To simulate a multi-device BFT mesh locally:
 * **Gateway:** `cargo run --bin swarm-node -- gateway --port 3000`
 * **Worker 1:** `cd worker1_dir && cargo run --manifest-path ../Cargo.toml --bin swarm-node -- start --shard 1`
 * **Worker 2:** `cd worker2_dir && cargo run --manifest-path ../Cargo.toml --bin swarm-node -- start --shard 2`
+*(Note: Because of the unique identity generation, Workers must be run in separate directories during local testing to avoid PeerId collisions).*
 
 ## 2. Deploying Stateful Smart Contracts
 The CLI multiplexes deployments. Use `--lang` to route it correctly:
