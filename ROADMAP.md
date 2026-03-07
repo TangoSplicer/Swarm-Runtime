@@ -6,8 +6,11 @@
 - Persistent Stateful Actors & Asynchronous `tokio::sync::Mutex` locks.
 - P2P Pre-Flight State Synchronization & Atomic Smart Contract Routing.
 
-## Phase 9: The Global Mesh & Cryptographic Identity - 🚧 NEXT
-- **Unique Peer Identities:** Replace the hardcoded `GATEWAY_SECRET_SEED` with dynamically generated `.swarm_identity` files for every node.
+## Phase 9.1: Cryptographic Identity - ✅ COMPLETED
+- **Unique Peer Identities:** Replaced the hardcoded `GATEWAY_SECRET_SEED` with dynamically generated `.swarm_identity` files for every node.
+- **Unified PKI:** Passed the persistent seed into the Libp2p `SwarmBuilder` to guarantee static Network IDs.
+
+## Phase 9.2: The Global Mesh (Oracle Cloud) - 🚧 NEXT
 - **Public Cloud Gateway:** Deploy the `swarm-node` Gateway to a public Oracle Cloud VPS (Always Free Tier) to provide a permanent anchor for the Kademlia DHT.
 - **NAT Traversal & Mobile Mesh:** Connect Termux mobile edge workers to the public Gateway over cellular networks to prove real-world distributed BFT consensus.
 
@@ -19,5 +22,4 @@
 ## Phase 11: Enterprise Federation (Production Readiness) - ⏳ PLANNED
 - **Gateway Replication:** Eliminate the single point of failure by allowing backup Gateways to instantly take over scheduling if the primary goes offline.
 - **WASM Compilation Caching:** Cache compiled native machine code locally so subsequent smart contract calls execute instantly.
-- **Observability:** Add a `/metrics` endpoint to export CPU, memory, and mesh telemetry for open-source dashboards.
 - **Polyglot State Sync (WASI VMFS):** Expand the state synchronization engine to support complex sandboxed file transfers (like `sqlite.db`) across the mesh.

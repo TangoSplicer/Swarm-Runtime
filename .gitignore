@@ -3,3 +3,4 @@ storage/
 **/*.db
 **/*.conf
 **/*.snap
+.swarm_identity

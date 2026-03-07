@@ -8,22 +8,16 @@ use anyhow::{Result, anyhow};
 /// The Unicast Request Payload
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SwarmRequest {
-    /// Gateway -> Worker: Sending the Shard payload (JSON String)
     DispatchShard(String),
-    /// Worker -> Gateway: Returning the calculated Result (JSON String)
     SubmitResult(String),
-    /// Client -> Worker: Requesting a file by its SHA-256 Hash
     FetchData(String),
 }
 
 /// The Unicast Response Payload
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SwarmResponse {
-    /// Immediate Decoupled ACK to close the stream
     Ack,
-    /// Rejection or Error
     Error(String),
-    /// Worker -> Client: Returning the requested file bytes
     DataPayload(Vec<u8>),
 }
 
@@ -33,7 +27,7 @@ pub struct SynapseBehavior {
     pub mdns: mdns::tokio::Behaviour,
     pub kademlia: kad::Behaviour<kad::store::MemoryStore>,
     pub identify: identify::Behaviour,
-    pub req_res: request_response::cbor::Behaviour<SwarmRequest, SwarmResponse>, // The New Data Plane
+    pub req_res: request_response::cbor::Behaviour<SwarmRequest, SwarmResponse>,
 }
 
 pub struct SynapseNode {
@@ -41,38 +35,38 @@ pub struct SynapseNode {
 }
 
 impl SynapseNode {
-    pub async fn new(p2p_port: u16) -> Result<Self> {
-        let id_keys = libp2p::identity::Keypair::generate_ed25519();
+    // PHASE 9.1: Persistent Network Identity Injection
+    pub async fn new(p2p_port: u16, mut seed: [u8; 32]) -> Result<Self> {
+        // Convert our permanent 32-byte seed into a Libp2p Keypair
+        let secret = libp2p::identity::ed25519::SecretKey::try_from_bytes(&mut seed)
+            .map_err(|e| anyhow!("Invalid ed25519 seed: {:?}", e))?;
+        let ed25519_kp = libp2p::identity::ed25519::Keypair::from(secret);
+        let id_keys = libp2p::identity::Keypair::from(ed25519_kp);
+        
         let peer_id = PeerId::from(id_keys.public());
-
         println!("🆔 Local Peer ID: {}", peer_id);
 
         let mut swarm = libp2p::SwarmBuilder::with_existing_identity(id_keys)
             .with_tokio()
             .with_tcp(tcp::Config::default(), noise::Config::new, yamux::Config::default)?
             .with_behaviour(|key| {
-                // 1. GossipSub (Control Plane)
                 let gossipsub_config = gossipsub::ConfigBuilder::default()
                     .heartbeat_interval(Duration::from_secs(1))
                     .validation_mode(gossipsub::ValidationMode::Permissive)
                     .build()
                     .map_err(|e| anyhow!("{:?}", e))?;
 
-                // 2. Kademlia
                 let mut kad_config = kad::Config::default();
                 kad_config.set_protocol_names(vec![StreamProtocol::new("/swarm/kad/1.0.0")]);
                 let store = kad::store::MemoryStore::new(peer_id);
 
-                // 3. mDNS
                 let mdns_config = mdns::Config::default();
 
-                // 4. Identify
                 let identify_config = identify::Config::new(
                     "swarm/1.0.0".to_string(),
                     key.public(),
                 );
 
-                // 5. Request-Response (Data Plane)
                 let req_res_protocol = StreamProtocol::new("/swarm/req-res/1.0.0");
                 let req_res_config = request_response::Config::default().with_request_timeout(std::time::Duration::from_secs(300));
                 let req_res = request_response::cbor::Behaviour::<SwarmRequest, SwarmResponse>::new(
@@ -109,12 +103,10 @@ impl SynapseNode {
         Ok(())
     }
 
-    /// Dispatch a 1-to-1 Unicast Request
     pub fn send_request(&mut self, peer: &PeerId, req: SwarmRequest) -> request_response::OutboundRequestId {
         self.swarm.behaviour_mut().req_res.send_request(peer, req)
     }
 
-    /// Respond to an incoming Unicast Request
     pub fn send_response(&mut self, ch: request_response::ResponseChannel<SwarmResponse>, res: SwarmResponse) {
         let _ = self.swarm.behaviour_mut().req_res.send_response(ch, res);
     }

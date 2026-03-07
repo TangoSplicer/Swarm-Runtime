@@ -1,10 +1,11 @@
-# Swarm Runtime: Technical Specification v0.23.0
+# Swarm Runtime: Technical Specification v0.24.0
 
 ## 1. System Architecture
 * **Topology:** Physical Mesh (Libp2p), Logical Star (Gateway-Coordinator).
 * **Control Plane:** `gossipsub` (Used strictly for `TEL:` hardware heartbeats).
 * **Data Plane:** `libp2p::request_response` (1-to-1 Unicast TCP streams) extended with `FetchData` and `DataPayload` custom CBOR protocols.
 * **Storage Plane:** `libp2p::kad` (Kademlia DHT for VMFS file pinning).
+* **Security:** Cryptographic `PeerId` generation via `/dev/urandom` mapped to `.swarm_identity`. TCP stream encryption via Libp2p `Noise`.
 * **Consensus:** Dynamic Redundancy Factor (Max: 2) + SHA-256 Output State Hashing.
 
 ## 2. Distributed Stateful Smart Contracts (Phase 7 & 8)

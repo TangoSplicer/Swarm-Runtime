@@ -8,11 +8,6 @@ use tokio::sync::Mutex;
 use ed25519_dalek::SigningKey;
 use synapse::SwarmRequest;
 
-pub const GATEWAY_SECRET_SEED: [u8; 32] = [
-    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-    17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32
-];
-
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ShardedDeployRequest {
     pub wasm_base64: String,
@@ -39,22 +34,22 @@ pub struct ShardResult {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct SignedPayload {
-    pub payload_json: String, 
-    pub expires_at: u64,      
-    pub signature: Vec<u8>,   
+    pub payload_json: String,
+    pub expires_at: u64,
+    pub signature: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Telemetry {
     pub peer_id: String,
-    pub cpu_usage: f32,    
-    pub free_ram_mb: u64,  
+    pub cpu_usage: f32,
+    pub free_ram_mb: u64,
 }
 
 #[derive(Serialize, Clone)]
-pub struct SwarmStatus { 
-    pub version: String, 
-    pub role: String, 
+pub struct SwarmStatus {
+    pub version: String,
+    pub role: String,
     pub peers_count: usize,
     #[serde(skip)] pub peers: HashSet<libp2p::PeerId>,
 }
@@ -62,21 +57,21 @@ pub struct SwarmStatus {
 pub struct JobState {
     pub expected_shards: usize,
     pub redundancy: usize,
-    pub raw_results: HashMap<u32, HashMap<libp2p::PeerId, (i32, String)>>, 
+    pub raw_results: HashMap<u32, HashMap<libp2p::PeerId, (i32, String)>>,
     pub verified_results: HashMap<u32, (i32, String)>,
     pub created_at: Instant,
     pub assignments: HashMap<u32, HashMap<libp2p::PeerId, Instant>>,
     pub shards_data: HashMap<u32, Shard>,
-    pub unassigned_dataset: Option<Vec<String>>, 
+    pub unassigned_dataset: Option<Vec<String>>,
     pub wasm_image: String,
 }
 
 pub enum NodeCommand {
     Unicast(libp2p::PeerId, SwarmRequest),
-    Broadcast(String), 
+    Broadcast(String),
     Disconnect(libp2p::PeerId),
     PinFile(String),
-    FetchFile(String, tokio::sync::oneshot::Sender<Option<Vec<u8>>>), // NEW: Instructs libp2p to announce a file hash to the DHT
+    FetchFile(String, tokio::sync::oneshot::Sender<Option<Vec<u8>>>),
 }
 
 #[allow(dead_code)]

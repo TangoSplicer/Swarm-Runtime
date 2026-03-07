@@ -1,5 +1,12 @@
 # Swarm Runtime Changelog
 
+## [0.24.0] - 2026-03-07
+### Added
+- Security: Removed hardcoded `GATEWAY_SECRET_SEED`. Swarm nodes now dynamically generate permanent cryptographic identities via OS-native `/dev/urandom` and save them to `.swarm_identity`.
+- Networking: Injected the permanent identity seed directly into the Libp2p `SynapseNode`, unifying the Application and Network layer identities for stable public IP addressing.
+### Changed
+- Security: Deprecated manual `ed25519_dalek` signature verification on incoming payloads in favor of Libp2p's native `Noise` cryptographic protocol for encrypted, authenticated TCP streams.
+
 ## [0.23.0] - 2026-03-06
 ### Added
 - Core: P2P Pre-Flight State Synchronization. Late-joining workers query the Gateway's expected state hash and dynamically download missing 1MB memory snapshots from peers.

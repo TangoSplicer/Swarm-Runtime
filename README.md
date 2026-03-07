@@ -3,15 +3,14 @@
 
 [![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange)](https://www.rust-lang.org/)
 [![Termux](https://img.shields.io/badge/Platform-Android%20%2F%20Termux-green)](https://termux.dev/)
-[![Status](https://img.shields.io/badge/Release-v0.23.0%20(Stateful%20Smart%20Contracts)-blue)](https://github.com/TangoSplicer/Swarm-Runtime)
+[![Status](https://img.shields.io/badge/Release-v0.24.0%20(Public%20Mesh%20Readiness)-blue)](https://github.com/TangoSplicer/Swarm-Runtime)
 
 Swarm Runtime turns Android devices into a fault-tolerant compute cluster. It uses **Libp2p** for mesh networking, **Axum** for a Headless REST API, and the **Wasmi** interpreter for secure, ARM64-safe sandboxed code execution.
 
-## 🚀 New in v0.23.0 (Stateful Smart Contracts & P2P Sync)
-* **🧠 Persistent Stateful Actors:** WebAssembly linear memory is now dynamically extracted and injected across executions. Smart contracts can preserve their state (`.state` files) indefinitely.
-* **🔗 P2P Pre-Flight State Synchronization:** New workers joining the mesh automatically detect if their local contract state is empty or out-of-date. They dynamically query the Kademlia DHT and fetch the latest 1MB memory snapshot from peers *before* executing a new job.
-* **⚖️ Atomic Routing & Deduplication:** The Gateway dynamically distinguishes between stateless MapReduce jobs and Stateful Smart Contracts, routing atomic payloads to ensure deterministic execution, while workers utilize highly concurrent `DashSet` caching to prevent redundant double-claiming.
-* **📥 Kademlia DHT File Fetching:** Complete closed-loop data retrieval for both state files and standard `output.txt` artifacts.
+## 🚀 New in v0.24.0 (Public Mesh Readiness)
+* **🔑 Cryptographic Identity:** Removed hardcoded seeds. Nodes now generate permanent, unique `ed25519` identities via OS-native `/dev/urandom` and save them to `.swarm_identity`.
+* **🌐 Stable Public Peer IDs:** Unified Application and Network layer cryptography. Libp2p now uses the persistent identity, ensuring Gateway and Worker nodes retain the same addressable `PeerId` across cloud server reboots.
+* **🔒 Noise Protocol Security:** Payload routing is now implicitly secured and authenticated by the Libp2p `Noise` cryptographic handshake over TCP streams.
 
 ## 📦 Architecture: The Polyglot & Compiled Pipeline
 1. **Queue:** Client submits code via CLI.

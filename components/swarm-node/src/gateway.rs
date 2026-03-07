@@ -19,7 +19,7 @@ use synapse::{SynapseNode, SynapseBehaviorEvent, SwarmRequest, SwarmResponse};
 use crate::types::*;
 
 pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
-    let mut p2p_node = SynapseNode::new(4000).await?;
+    let mut p2p_node = SynapseNode::new(4000, signing_key.to_bytes()).await?;
     let local_peer_id = *p2p_node.swarm.local_peer_id();
     p2p_node.subscribe("swarm-control-plane")?;
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<NodeCommand>();
