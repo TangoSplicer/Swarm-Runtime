@@ -22,6 +22,14 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey, seed: [u8; 3
     let local_peer_id = *p2p_node.swarm.local_peer_id();
     p2p_node.subscribe("swarm-control-plane")?;
     println!("=== Worker Live (Shard {}) on Port {} ===", shard_id, port);
+	        // Explicitly dial the Oracle Cloud Gateway over the public internet
+        let cloud_gateway: libp2p::Multiaddr = "/ip4/145.241.192.79/tcp/4000/p2p/12D3KooWR6zCohbghjfRyUriggGyq6HKWJxapyziq2icYgXGeEiK".parse().unwrap();
+        
+        if let Err(e) = p2p_node.swarm.dial(cloud_gateway) {
+            println!("⚠️ Failed to dial Gateway: {:?}", e);
+        } else {
+            println!("🚀 Dialing Oracle Cloud Gateway...");
+        }
 
     let pending_dials = Arc::new(DashMap::<libp2p::PeerId, Instant>::new());
     let pending_c = pending_dials.clone();

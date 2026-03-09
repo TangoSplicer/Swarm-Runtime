@@ -1,5 +1,11 @@
 # Swarm Runtime Changelog
 
+## [0.25.0] - 2026-03-09
+### Added
+- Networking: Global Mesh Ignition! Successfully deployed the Gateway to an Oracle Cloud VPS (Public WAN).
+- Networking: Hardcoded explicit Libp2p Multiaddr dialing in the Worker to bypass the local-only mDNS trap.
+- API: Validated Axum REST API JSON deserialization and Gossipsub task routing across the public internet.
+
 ## [0.24.0] - 2026-03-07
 ### Added
 - Security: Removed hardcoded `GATEWAY_SECRET_SEED`. Swarm nodes now dynamically generate permanent cryptographic identities via OS-native `/dev/urandom` and save them to `.swarm_identity`.
@@ -18,9 +24,3 @@
 - Judge: Persistent Stateful Actors. Extracts and injects WebAssembly linear memory.
 - Worker: `tokio::sync::Mutex` Contract Lock Manager prevents async thread corruption.
 - Worker: Job Deduplication. Highly concurrent `DashSet` caching prevents workers from double-claiming redundant job shards.
-### Changed
-- Judge: Removed static 1MB payload pointers in favor of dynamic `total_memory - payload_length` algorithms to prevent state overwrites.
-
-## [0.22.0] - 2026-03-04
-### Added
-- Core: Distributed Data Retrieval via asynchronous Libp2p streams.

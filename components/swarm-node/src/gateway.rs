@@ -417,7 +417,7 @@ async fn dashboard(State(_state): State<Arc<AppState>>) -> Html<String> {
     Html(r#"
         <div style="font-family: sans-serif; padding: 2rem;">
             <h1>🐝 Swarm Runtime Gateway</h1>
-            <p><strong>Version:</strong> v0.22.1 (Stateful Sync)</p>
+            <p><strong>Version:</strong> v0.23.0 (Stateful Sync)</p>
         </div>
     "#.to_string())
 }

@@ -1,25 +1,18 @@
 # Swarm Runtime: Roadmap to V1.0 🚀
 
-## Phase 1 to 8: Core Engine, BFT, & State Sync - ✅ COMPLETED
-- Fault Tolerance, Async Axum API, Hash-Based Consensus (SHA-256).
-- Polyglot edge execution with `wasmi` and `cap-std` sandboxing.
-- Persistent Stateful Actors & Asynchronous `tokio::sync::Mutex` locks.
-- P2P Pre-Flight State Synchronization & Atomic Smart Contract Routing.
+## Phase 1 to 9.1: Core Engine & PKI Identity - ✅ COMPLETED
+- Fault Tolerance, Async Axum API, Hash-Based Consensus.
+- P2P Pre-Flight State Sync & Atomic Smart Contract Routing.
+- Cryptographic Identity (`.swarm_identity`) and unified Network IDs via Libp2p `Noise`.
 
-## Phase 9.1: Cryptographic Identity - ✅ COMPLETED
-- **Unique Peer Identities:** Replaced the hardcoded `GATEWAY_SECRET_SEED` with dynamically generated `.swarm_identity` files for every node.
-- **Unified PKI:** Passed the persistent seed into the Libp2p `SwarmBuilder` to guarantee static Network IDs.
+## Phase 9.2: The Global Mesh (Oracle Cloud) - ✅ COMPLETED
+- **Public Cloud Gateway:** Deployed the `swarm-node` Gateway to a public Oracle Cloud VPS.
+- **NAT Traversal:** Connected Termux mobile edge workers to the public Gateway over the WAN, proving real-world distributed BFT consensus.
 
-## Phase 9.2: The Global Mesh (Oracle Cloud) - 🚧 NEXT
-- **Public Cloud Gateway:** Deploy the `swarm-node` Gateway to a public Oracle Cloud VPS (Always Free Tier) to provide a permanent anchor for the Kademlia DHT.
-- **NAT Traversal & Mobile Mesh:** Connect Termux mobile edge workers to the public Gateway over cellular networks to prove real-world distributed BFT consensus.
-
-## Phase 10: Swarm Hardening (Reliability) - ⏳ PLANNED
+## Phase 10: Swarm Hardening (Reliability) - 🚧 NEXT
 - **Memory Limits & Pruning:** Implement LRU caches and TTL sweeps for `DashMap` storage to prevent Out-Of-Memory (OOM) crashes on edge nodes.
 - **Asynchronous Backpressure:** Transition to bounded `tokio::sync::mpsc::channel` queues to gracefully reject traffic floods.
 - **Network Resilience:** Implement strict network timeouts and retry logic to handle cellular packet loss.
 
 ## Phase 11: Enterprise Federation (Production Readiness) - ⏳ PLANNED
-- **Gateway Replication:** Eliminate the single point of failure by allowing backup Gateways to instantly take over scheduling if the primary goes offline.
-- **WASM Compilation Caching:** Cache compiled native machine code locally so subsequent smart contract calls execute instantly.
-- **Polyglot State Sync (WASI VMFS):** Expand the state synchronization engine to support complex sandboxed file transfers (like `sqlite.db`) across the mesh.
+- **Gateway Replication:** Eliminate the single point of failure by allowing backup Gateways to instantly take over scheduling.
