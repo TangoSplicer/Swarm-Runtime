@@ -22,7 +22,7 @@ impl Judge {
         let sandbox_dir = "./rootfs/data";
         fs::create_dir_all(sandbox_dir).map_err(|e| anyhow!("Failed to create data dir: {}", e))?;
         fs::create_dir_all("./rootfs/lib").unwrap_or_default();
-
+        
         let module = Module::new(&self.engine, wasm_bytes).map_err(|e| anyhow!("Module compilation error: {}", e))?;
         let is_wasi_start = module.exports().any(|e| e.name() == "_start");
         let is_legacy = module.exports().any(|e| e.name() == "execute");
@@ -54,6 +54,9 @@ impl Judge {
             } else if polyglot_id == "POLYGLOT:SQLITE" {
                 target_file = "app.sql";
                 wasi_args = vec!["sqlite3".to_string(), "/data/swarm.db".to_string(), ".read /data/app.sql".to_string()];
+            } else {
+                // FIX: Inject the JSON dataset directly into the WASI arguments for raw WebAssembly!
+                wasi_args.extend_from_slice(dataset);
             }
 
             let app_path = format!("{}/{}", sandbox_dir, target_file);
@@ -103,7 +106,7 @@ impl Judge {
 
         if is_legacy {
             let payload = joined_dataset.as_bytes();
-            
+
             // NEW: Dynamic offset calculation! Place the payload at the very end of available memory.
             let mem_size = if let Some(mem) = memory_export { mem.data(&store).len() } else { 1_048_576 };
             let ptr_offset = if mem_size > payload.len() {
