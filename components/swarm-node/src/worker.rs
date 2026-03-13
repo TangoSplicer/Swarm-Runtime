@@ -245,7 +245,7 @@ pub async fn run_worker(shard_id: u64, _verifying_key: VerifyingKey, seed: [u8; 
                                                     let mut judge = Judge::new(None).unwrap();
 
                                                     match judge.execute(&wasm, &shard_data.data, String::from_utf8_lossy(&polyglot_id).as_ref(), previous_state.as_deref()) {
-                                                        Ok((res, mut hash, new_state_opt)) => {
+                                                        Ok((res, hash, new_state_opt)) => {
                                                             let sandbox_dir = "./rootfs/data";
                                                             let mut actual_state_hash = hash.clone();
 

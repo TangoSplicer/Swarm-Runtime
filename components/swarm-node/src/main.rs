@@ -1,11 +1,16 @@
+mod gateway;
+mod worker;
+mod types;
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use ed25519_dalek::SigningKey;
 
 #[derive(Parser)]
-#[command(name = "swarm")]
-#[command(about = "Swarm Runtime CLI - Deploy and monitor code on the decentralized mesh", long_about = None)]
+#[command(name = "swarm-node")]
+#[command(about = "Swarm Runtime - Unified Node & CLI", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -13,34 +18,33 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Start an Edge Worker node
+    Start {
+        #[arg(long)]
+        shard: u64,
+    },
+    /// Start the Orchestration Gateway
+    Gateway {
+        #[arg(long, default_value = "3000")]
+        port: u16,
+    },
     /// Fetch a file from the network using its SHA-256 Hash
     Fetch {
-        /// The SHA-256 Hash of the file
         hash: String,
-
-        /// The Gateway URL
         #[arg(long, default_value = "http://127.0.0.1:3000")]
         gateway: String,
     },
     /// Deploy a script to the Swarm network
     Deploy {
-        /// The path to the script file (e.g., app.py)
         file: String,
-
-        /// The language of the script (e.g., python)
         #[arg(short, long, default_value = "python")]
         lang: String,
-
-        /// The Gateway URL
         #[arg(long, default_value = "http://127.0.0.1:3000")]
         gateway: String,
     },
     /// Check the status and output of a deployed job
     Status {
-        /// The Job ID returned from the deploy command
         job_id: String,
-
-        /// The Gateway URL
         #[arg(long, default_value = "http://127.0.0.1:3000")]
         gateway: String,
     }
@@ -63,66 +67,53 @@ struct JobStatusResponse {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let client = reqwest::Client::new();
+    
+    // 1. Unified Cryptographic Identity Loading
+    let id_path = ".swarm_identity";
+    let signing_key = if let Ok(bytes) = fs::read(id_path) {
+        let mut key_bytes = [0u8; 32];
+        let len = std::cmp::min(bytes.len(), 32);
+        key_bytes[..len].copy_from_slice(&bytes[..len]);
+        if cli.is_node_command() {
+            println!("🔑 Loaded existing cryptographic identity from .swarm_identity");
+        }
+        SigningKey::from_bytes(&key_bytes)
+    } else {
+        if cli.is_node_command() {
+            println!("🌱 Generating new cryptographic identity...");
+        }
+        
+        let mut key_bytes = [0u8; 32];
+        let mut file = std::fs::File::open("/dev/urandom").expect("Failed to open /dev/urandom");
+        use std::io::Read;
+        file.read_exact(&mut key_bytes).expect("Failed to read random bytes");
+        let key = SigningKey::from_bytes(&key_bytes);
+        fs::write(id_path, key.to_bytes()).context("Failed to write identity")?;
+        key
+    };
 
+    let verifying_key = signing_key.verifying_key();
+    let seed = signing_key.to_bytes();
+
+    // 2. Command Router
     match &cli.command {
+        Commands::Start { shard } => {
+            worker::run_worker(*shard, verifying_key, seed).await?;
+        },
+        Commands::Gateway { port } => {
+            gateway::run_gateway(*port, signing_key).await?;
+        },
         Commands::Deploy { file, lang, gateway } => {
+            let client = reqwest::Client::new();
             println!("🚀 Preparing deployment for: {}", file);
 
-            // Return (wasm_bytes: Vec<u8>, dataset: Vec<String>)
             let (wasm_bytes, dataset) = match lang.to_lowercase().as_str() {
-                "zig" => {
-                    println!("⚙️  Locally compiling Zig source natively to WASIp1...");
-                    let temp_wasm = format!("{}.wasm", file.replace(".zig", "").replace("/", "_"));
-                    
-                    let status = std::process::Command::new("zig")
-                        .args([
-                            "build-exe", file, 
-                            "-target", "wasm32-wasi", 
-                            "-O", "ReleaseSmall", 
-                            &format!("-femit-bin={}", temp_wasm)
-                        ])
-                        .status()
-                        .context("Failed to execute zig compiler. Is Zig installed?")?;
-
-                    if !status.success() {
-                        anyhow::bail!("❌ Zig compilation failed!");
-                    }
-
-                    let wasm_bytes = std::fs::read(&temp_wasm).context("Failed to read compiled wasm")?;
-                    let _ = std::fs::remove_file(&temp_wasm); // Cleanup binary
-                    let _ = std::fs::remove_file(format!("{}.o", temp_wasm)).unwrap_or_default(); // Cleanup object file
-                    
-                    (wasm_bytes, vec!["EXECUTE_NATIVE_WASM".to_string()])
-                },
                 "wasm" => {
-                    println!("⚙️  Reading raw WebAssembly binary...");
                     let wasm_bytes = fs::read(file).context("Failed to read .wasm file")?;
                     (wasm_bytes, vec!["EXECUTE_NATIVE_WASM".to_string()])
                 },
-                "go" => {
-                    println!("⚙️  Locally compiling Go source natively to WASIp1...");
-                    let temp_wasm = format!("{}.wasm", file.replace(".go", "").replace("/", "_"));
-                    let status = std::process::Command::new("go")
-                        .env("GOOS", "wasip1")
-                        .env("GOARCH", "wasm")
-                        .args(["build", "-ldflags=-s -w", "-o", &temp_wasm, file])
-                        .status()
-                        .context("Failed to execute go compiler. Is Go installed?")?;
-
-                    if !status.success() {
-                        anyhow::bail!("❌ Go compilation failed!");
-                    }
-
-                    let wasm_bytes = fs::read(&temp_wasm).context("Failed to read compiled wasm")?;
-                    let _ = fs::remove_file(&temp_wasm); // Cleanup
-
-                    (wasm_bytes, vec!["EXECUTE_NATIVE_WASM".to_string()])
-                },
                 "python" | "js" | "javascript" | "lua" | "ruby" | "rb" | "php" | "sqlite" | "sql" => {
-                    let code = fs::read_to_string(file)
-                        .with_context(|| format!("Failed to read file: {}", file))?;
-                        
+                    let code = fs::read_to_string(file).with_context(|| format!("Failed to read file: {}", file))?;
                     let identifier = match lang.to_lowercase().as_str() {
                         "python" => "POLYGLOT:PYTHON",
                         "js" | "javascript" => "POLYGLOT:JS",
@@ -134,96 +125,66 @@ async fn main() -> Result<()> {
                     };
                     (identifier.as_bytes().to_vec(), vec![code])
                 },
-                _ => anyhow::bail!("Unsupported language: {}. Currently supported: python, js, lua, ruby, php, sqlite, go, wasm, zig", lang),
+                _ => anyhow::bail!("Unsupported language: {}. Supported: python, js, lua, ruby, php, sqlite, wasm", lang),
             };
 
-            let metadata = DeployMetadata {
-                dataset,
-            };
-
-            let metadata_json = serde_json::to_string(&metadata).context("Failed to serialize metadata")?;
+            let metadata = DeployMetadata { dataset };
+            let metadata_json = serde_json::to_string(&metadata)?;
 
             let wasm_part = reqwest::multipart::Part::bytes(wasm_bytes)
                 .file_name(file.clone())
                 .mime_str("application/octet-stream")?;
-                
             let metadata_part = reqwest::multipart::Part::text(metadata_json)
                 .mime_str("application/json")?;
 
-            let form = reqwest::multipart::Form::new()
-                .part("wasm", wasm_part)
-                .part("metadata", metadata_part);
-
+            let form = reqwest::multipart::Form::new().part("wasm", wasm_part).part("metadata", metadata_part);
             let url = format!("{}/api/v1/jobs", gateway.trim_end_matches('/'));
+            
             println!("📡 Dispatching payload to Gateway at {}...", url);
-
-            let res = client.post(&url)
-                .multipart(form)
-                .send()
-                .await
-                .context("Failed to connect to the Swarm Gateway.")?;
+            let res = client.post(&url).multipart(form).send().await?;
 
             if res.status().is_success() {
-                let response_text = res.text().await?;
-                println!("✅ Deployment Successful!");
-                println!("   Gateway Response: {}", response_text);
-                println!("   (Run 'swarm status <JOB_ID>' to check execution results)");
+                println!("✅ Deployment Successful!\n   Gateway Response: {}", res.text().await?);
             } else {
-                println!("❌ Deployment Failed (Status: {})", res.status());
-                println!("   Error: {}", res.text().await.unwrap_or_default());
-            }
-        }
-        Commands::Fetch { hash, gateway } => {
-            println!("🔍 Querying Gateway for File Hash: {}...", hash);
-            
-            match client.get(format!("{}/api/v1/data/{}", gateway, hash)).send().await {
-                Ok(response) => {
-                    if response.status().is_success() {
-                        if let Ok(bytes) = response.bytes().await {
-                            let filename = format!("download_{}.bin", &hash[..8]);
-                            if std::fs::write(&filename, &bytes).is_ok() {
-                                println!("✅ Success! File downloaded to: {}", filename);
-                            } else {
-                                println!("❌ Failed to write file to disk.");
-                            }
-                        }
-                    } else {
-                        println!("❌ Failed to retrieve file. It may not exist on the network.");
-                    }
-                },
-                Err(e) => println!("❌ Failed to connect to Gateway: {}", e),
+                println!("❌ Deployment Failed (Status: {})\n   Error: {}", res.status(), res.text().await.unwrap_or_default());
             }
         },
         Commands::Status { job_id, gateway } => {
+            let client = reqwest::Client::new();
             let url = format!("{}/api/v1/jobs/{}", gateway.trim_end_matches('/'), job_id);
-            println!("🔍 Querying Gateway for Job ID: {}...", job_id);
-
-            let res = client.get(&url)
-                .send()
-                .await
-                .context("Failed to connect to the Swarm Gateway.")?;
+            let res = client.get(&url).send().await?;
 
             if res.status().is_success() {
                 let status_data: JobStatusResponse = res.json().await?;
-                
                 println!("\n=== 📊 Swarm Job Status ===");
                 println!("Status:          {}", status_data.status.to_uppercase());
-                
                 if status_data.status == "completed" {
                     println!("Consensus Hash:  {}", status_data.hashes.first().map(|(_, h)| h.as_str()).unwrap_or("NONE"));
                     println!("Numeric Result:  {}", status_data.total_sum);
-                    println!("Shard Breakdown: {:?}", status_data.breakdown);
-                    println!("Verified Shards: {}", status_data.hashes.len());
                 } else {
                     println!("Missing Shards:  {:?}", status_data.missing_shards);
                 }
                 println!("===========================\n");
-
             } else {
                 println!("❌ Failed to retrieve status (HTTP {})", res.status());
             }
+        },
+        Commands::Fetch { hash, gateway } => {
+            let client = reqwest::Client::new();
+            if let Ok(response) = client.get(format!("{}/api/v1/data/{}", gateway, hash)).send().await {
+                if let Ok(bytes) = response.bytes().await {
+                    let filename = format!("download_{}.bin", &hash[..8]);
+                    let _ = fs::write(&filename, &bytes);
+                    println!("✅ Success! File downloaded to: {}", filename);
+                }
+            }
         }
     }
-
     Ok(())
+}
+
+impl Cli {
+    fn is_node_command(&self) -> bool {
+        matches!(self.command, Commands::Start { .. } | Commands::Gateway { .. })
+    }
 }
