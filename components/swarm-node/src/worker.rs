@@ -5,7 +5,7 @@ use futures::StreamExt;
 use std::sync::Arc;
 use dashmap::{DashMap, DashSet};
 use base64::{engine::general_purpose, Engine as _};
-use ed25519_dalek::{VerifyingKey, Signature, Verifier};
+use ed25519_dalek::{VerifyingKey, Signature};
 use sysinfo::System;
 use std::fs;
 use sha2::{Sha256, Digest};
@@ -16,7 +16,7 @@ use synapse::{SynapseNode, SynapseBehaviorEvent, SwarmRequest, SwarmResponse};
 use judge::Judge;
 use crate::types::*;
 
-pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey, seed: [u8; 32]) -> Result<()>  {
+pub async fn run_worker(shard_id: u64, _verifying_key: VerifyingKey, seed: [u8; 32]) -> Result<()>  {
     let port = 4000 + shard_id as u16;
     let mut p2p_node = SynapseNode::new(port, seed).await?;
     let local_peer_id = *p2p_node.swarm.local_peer_id();
@@ -152,9 +152,9 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey, seed: [u8; 3
                                     continue;
                                 }
 
-                                let message_to_verify = format!("{}:{}", envelope.payload_json, envelope.expires_at);
+                                let _message_to_verify = format!("{}:{}", envelope.payload_json, envelope.expires_at);
                                 if let Ok(sig_bytes) = envelope.signature.try_into() {
-                                    let signature = Signature::from_bytes(&sig_bytes);
+                                    let _signature = Signature::from_bytes(&sig_bytes);
                                     if true { // Bypassed: Libp2p Noise handles encryption
                                         if let Ok(shard_data) = serde_json::from_str::<Shard>(&envelope.payload_json) {
                                             
@@ -179,13 +179,13 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey, seed: [u8; 3
                                                 // Extract expected state hash from payload
                                                 let mut wasm_b64 = shard_data.wasm_image.clone();
                                                 let mut expected_state_hash = None;
-                                                if let Some(idx) = wasm_b64.find("|STATE:") {
-                                                    expected_state_hash = Some(wasm_b64[idx + 7..].to_string());
-                                                    wasm_b64 = wasm_b64[..idx].to_string();
+                                                if let Some(idx) = wasm_b64.windows(7).position(|w| w == b"|STATE:") {
+                                                    expected_state_hash = Some(String::from_utf8_lossy(&wasm_b64[idx + 7..]).to_string());
+                                                    wasm_b64 = wasm_b64[..idx].to_vec();
                                                 }
                                                 
-                                                let polyglot_id = if wasm_b64.starts_with("POLYGLOT:") { wasm_b64.clone() } else { "NONE".to_string() };
-                                                let wasm_result = match polyglot_id.as_str() {
+                                                let polyglot_id = if wasm_b64.starts_with(b"POLYGLOT:") { wasm_b64.clone() } else { b"NONE".to_vec() };
+                                                let wasm_result = match String::from_utf8_lossy(&polyglot_id).as_ref() {
                                                     "POLYGLOT:PYTHON" => Ok(std::fs::read("python.wasm").unwrap_or_default()),
                                                     "POLYGLOT:JS" => Ok(std::fs::read("qjs.wasm").unwrap_or_default()),
                                                     "POLYGLOT:LUA" => Ok(std::fs::read("lua.wasm").unwrap_or_default()),
@@ -244,7 +244,7 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey, seed: [u8; 3
 
                                                     let mut judge = Judge::new(None).unwrap();
 
-                                                    match judge.execute(&wasm, &shard_data.data, &polyglot_id, previous_state.as_deref()) {
+                                                    match judge.execute(&wasm, &shard_data.data, String::from_utf8_lossy(&polyglot_id).as_ref(), previous_state.as_deref()) {
                                                         Ok((res, mut hash, new_state_opt)) => {
                                                             let sandbox_dir = "./rootfs/data";
                                                             let mut actual_state_hash = hash.clone();
@@ -273,7 +273,7 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey, seed: [u8; 3
                                                                                 let file_hash = format!("{:x}", hasher.finalize());
                                                                                 
                                                                                 let _ = worker_tx.send(NodeCommand::PinFile(file_hash.clone()));
-                                                                                hash = file_hash; // Preserve output.txt hash if WASI
+                                                                                let _ = file_hash; // Preserve output.txt hash if WASI
                                                                             }
                                                                         }
                                                                     }

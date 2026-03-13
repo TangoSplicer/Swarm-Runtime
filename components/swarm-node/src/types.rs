@@ -10,7 +10,6 @@ use synapse::SwarmRequest;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ShardedDeployRequest {
-    pub wasm_base64: String,
     pub dataset: Vec<String>,
 }
 
@@ -20,7 +19,7 @@ pub struct Shard {
     pub shard_index: u32,
     pub total_shards: u32,
     pub data: Vec<String>,
-    pub wasm_image: String,
+    pub wasm_image: Vec<u8>,
     pub target_peer: Option<String>,
 }
 
@@ -63,7 +62,7 @@ pub struct JobState {
     pub assignments: HashMap<u32, HashMap<libp2p::PeerId, Instant>>,
     pub shards_data: HashMap<u32, Shard>,
     pub unassigned_dataset: Option<Vec<String>>,
-    pub wasm_image: String,
+    pub wasm_image: Vec<u8>,
 }
 
 pub enum NodeCommand {

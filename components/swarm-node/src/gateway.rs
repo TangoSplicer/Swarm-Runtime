@@ -84,19 +84,19 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
 
                             peer_fitness.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                             
-                            let is_stateful = !job.wasm_image.is_empty() && job.wasm_image != "NONE";
+                            let is_stateful = !job.wasm_image.is_empty() && job.wasm_image != b"NONE";
 
                             if is_stateful {
                                 job.expected_shards = 1;
                                 
                                 // PHASE 8: Attach Latest State Hash to Payload
                                 let mut hasher = Sha256::new();
-                                hasher.update(job.wasm_image.as_bytes());
+                                hasher.update(&job.wasm_image);
                                 let contract_key = hex::encode(hasher.finalize());
                                 
                                 let mut out_wasm_image = job.wasm_image.clone();
                                 if let Some(latest_state) = contract_states_c.get(&contract_key) {
-                                    out_wasm_image = format!("{}|STATE:{}", out_wasm_image, latest_state.value());
+                                    let mut final_wasm = out_wasm_image.clone(); final_wasm.extend_from_slice(b"|STATE:"); final_wasm.extend_from_slice(latest_state.value().as_bytes()); out_wasm_image = final_wasm;
                                 }
                                 
                                 let primary_peer = peer_fitness[0].0;
@@ -305,10 +305,10 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                                                     guard.verified_results.insert(res_data.shard_index, (*final_result, final_hash.clone()));
                                                     
                                                     // PHASE 8: Store verified state hash
-                                                    let is_stateful = !guard.wasm_image.is_empty() && guard.wasm_image != "NONE";
+                                                    let is_stateful = !guard.wasm_image.is_empty() && guard.wasm_image != b"NONE";
                                                     if is_stateful && res_data.shard_index == 0 {
                                                         let mut hasher = Sha256::new();
-                                                        hasher.update(guard.wasm_image.as_bytes());
+                                                        hasher.update(&guard.wasm_image);
                                                         let contract_key = hex::encode(hasher.finalize());
                                                         contract_states_c.insert(contract_key, final_hash.clone());
                                                     }
@@ -359,8 +359,25 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
     Ok(())
 }
 
-async fn submit_job(State(state): State<Arc<AppState>>, Json(payload): Json<ShardedDeployRequest>) -> (StatusCode, Json<JobSubmitResponse>) {
+async fn submit_job(State(state): State<Arc<AppState>>, mut multipart: axum::extract::Multipart) -> (StatusCode, Json<JobSubmitResponse>) {
     let task_id = Uuid::new_v4();
+    let mut wasm_bytes = Vec::new();
+    let mut dataset = Vec::new();
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+        if name == "wasm" {
+            if let Ok(data) = field.bytes().await {
+                wasm_bytes = data.to_vec();
+            }
+        } else if name == "metadata" {
+            if let Ok(data) = field.bytes().await { let text = String::from_utf8_lossy(&data);
+                if let Ok(payload) = serde_json::from_str::<ShardedDeployRequest>(&text) {
+                    dataset = payload.dataset;
+                }
+            }
+        }
+    }
 
     let job_state = JobState {
         expected_shards: 0,
@@ -370,13 +387,13 @@ async fn submit_job(State(state): State<Arc<AppState>>, Json(payload): Json<Shar
         created_at: Instant::now(),
         assignments: HashMap::new(),
         shards_data: HashMap::new(),
-        unassigned_dataset: Some(payload.dataset.clone()),
-        wasm_image: payload.wasm_base64,
+        unassigned_dataset: Some(dataset.clone()),
+        wasm_image: wasm_bytes,
     };
 
     state.jobs.insert(task_id, Arc::new(Mutex::new(job_state)));
 
-    println!("📥 Job Queued: {} with {} Complex Items", task_id, payload.dataset.len());
+    println!("📥 Job Queued: {} with {} Complex Items", task_id, dataset.len());
 
     (StatusCode::ACCEPTED, Json(JobSubmitResponse {
         job_id: task_id.to_string(),
