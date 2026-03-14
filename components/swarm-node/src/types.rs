@@ -75,7 +75,7 @@ pub enum NodeCommand {
 
 #[allow(dead_code)]
 pub struct AppState {
-    pub node_tx: tokio::sync::mpsc::UnboundedSender<NodeCommand>,
+    pub node_tx: tokio::sync::mpsc::Sender<NodeCommand>,
     pub jobs: Arc<DashMap<Uuid, Arc<Mutex<JobState>>>>,
     pub stats: Arc<Mutex<SwarmStatus>>,
     pub health_registry: Arc<DashMap<libp2p::PeerId, u8>>,

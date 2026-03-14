@@ -22,7 +22,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
     let mut p2p_node = SynapseNode::new(4000, signing_key.to_bytes()).await?;
     let local_peer_id = *p2p_node.swarm.local_peer_id();
     p2p_node.subscribe("swarm-control-plane")?;
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<NodeCommand>();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<NodeCommand>(1000);
 
     let jobs = Arc::new(DashMap::new());
     let stats = Arc::new(Mutex::new(SwarmStatus {
@@ -218,7 +218,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
 
                         let signed_payload = SignedPayload { payload_json, expires_at, signature: signature.to_bytes().to_vec() };
                         let req = SwarmRequest::DispatchShard(serde_json::to_string(&signed_payload).unwrap());
-                        let _ = tx.send(NodeCommand::Unicast(peer, req));
+                        let _ = tx.try_send(NodeCommand::Unicast(peer, req));
                     }
                 },
                 Some(cmd) = rx.recv() => {
@@ -315,7 +315,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                                                 } else {
                                                     println!("🚨 HASH COLLISION DETECTED! State mutation mismatch on Shard {}.", res_data.shard_index);
                                                     for (p, _) in shard_results.iter() {
-                                                        let _ = tx.send(NodeCommand::Disconnect(*p));
+                                                        let _ = tx.try_send(NodeCommand::Disconnect(*p));
                                                     }
                                                     guard.assignments.remove(&res_data.shard_index);
                                                 }
@@ -441,7 +441,7 @@ async fn dashboard(State(_state): State<Arc<AppState>>) -> Html<String> {
 
 async fn fetch_data(State(state): State<Arc<AppState>>, Path(hash): Path<String>) -> (StatusCode, Vec<u8>) {
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let _ = state.node_tx.send(NodeCommand::FetchFile(hash.clone(), tx));
+    let _ = state.node_tx.try_send(NodeCommand::FetchFile(hash.clone(), tx));
 
     match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
         Ok(Ok(Some(bytes))) => (StatusCode::OK, bytes),

@@ -59,7 +59,7 @@ struct DeployMetadata {
 struct JobStatusResponse {
     status: String,
     total_sum: i32,
-    breakdown: Vec<(u32, i32)>,
+    _breakdown: Vec<(u32, i32)>,
     hashes: Vec<(u32, String)>,
     missing_shards: Vec<u32>,
 }
@@ -104,7 +104,7 @@ async fn main() -> Result<()> {
             gateway::run_gateway(*port, signing_key).await?;
         },
         Commands::Deploy { file, lang, gateway } => {
-            let client = reqwest::Client::new();
+            let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().unwrap();
             println!("🚀 Preparing deployment for: {}", file);
 
             let (wasm_bytes, dataset) = match lang.to_lowercase().as_str() {
@@ -150,7 +150,7 @@ async fn main() -> Result<()> {
             }
         },
         Commands::Status { job_id, gateway } => {
-            let client = reqwest::Client::new();
+            let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().unwrap();
             let url = format!("{}/api/v1/jobs/{}", gateway.trim_end_matches('/'), job_id);
             let res = client.get(&url).send().await?;
 
@@ -170,7 +170,7 @@ async fn main() -> Result<()> {
             }
         },
         Commands::Fetch { hash, gateway } => {
-            let client = reqwest::Client::new();
+            let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().unwrap();
             if let Ok(response) = client.get(format!("{}/api/v1/data/{}", gateway, hash)).send().await {
                 if let Ok(bytes) = response.bytes().await {
                     let filename = format!("download_{}.bin", &hash[..8]);

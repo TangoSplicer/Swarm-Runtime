@@ -33,14 +33,14 @@ pub async fn run_worker(shard_id: u64, _verifying_key: VerifyingKey, seed: [u8; 
 
     let pending_dials = Arc::new(DashMap::<libp2p::PeerId, Instant>::new());
     let pending_c = pending_dials.clone();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<NodeCommand>();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<NodeCommand>(1000);
 
     let state_locks = Arc::new(DashMap::<String, Arc<Mutex<()>>>::new());
     let seen_jobs = Arc::new(DashSet::<String>::new());
     
     // PHASE 8: P2P Synchronizer Assets
     let connected_peers = Arc::new(DashSet::<libp2p::PeerId>::new());
-    let (internal_fetch_tx, mut internal_fetch_rx) = tokio::sync::mpsc::unbounded_channel::<(String, libp2p::PeerId, tokio::sync::oneshot::Sender<Vec<u8>>)>();
+    let (internal_fetch_tx, mut internal_fetch_rx) = tokio::sync::mpsc::channel::<(String, libp2p::PeerId, tokio::sync::oneshot::Sender<Vec<u8>>)>(100);
     let mut fetch_callbacks = HashMap::<libp2p::request_response::OutboundRequestId, tokio::sync::oneshot::Sender<Vec<u8>>>::new();
 
     let worker_tx_tel = tx.clone();
@@ -59,7 +59,7 @@ pub async fn run_worker(shard_id: u64, _verifying_key: VerifyingKey, seed: [u8; 
 
             let tel = Telemetry { peer_id: my_peer_id.clone(), cpu_usage, free_ram_mb };
             if let Ok(json) = serde_json::to_string(&tel) {
-                let _ = worker_tx_tel.send(NodeCommand::Broadcast(format!("TEL:{}", json)));
+                let _ = worker_tx_tel.try_send(NodeCommand::Broadcast(format!("TEL:{}", json)));
             }
         }
     });
@@ -148,7 +148,7 @@ pub async fn run_worker(shard_id: u64, _verifying_key: VerifyingKey, seed: [u8; 
                                 let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
                                 if now > envelope.expires_at {
                                     println!("🚨 REPLAY ATTACK: Payload expired.");
-                                    let _ = tx.send(NodeCommand::Disconnect(peer));
+                                    let _ = tx.try_send(NodeCommand::Disconnect(peer));
                                     continue;
                                 }
 
@@ -222,7 +222,7 @@ pub async fn run_worker(shard_id: u64, _verifying_key: VerifyingKey, seed: [u8; 
                                                             
                                                             for p in peers {
                                                                 let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                                                                let _ = internal_fetch_tx_clone.send((expected_hash.clone(), p, reply_tx));
+                                                                let _ = internal_fetch_tx_clone.try_send((expected_hash.clone(), p, reply_tx));
                                                                 if let Ok(Ok(bytes)) = tokio::time::timeout(Duration::from_secs(5), reply_rx).await {
                                                                     if fs::write(&state_path, &bytes).is_ok() {
                                                                         println!("✅ Successfully synchronized state [{}] from peer {}", &expected_hash[..8], p);
@@ -272,7 +272,7 @@ pub async fn run_worker(shard_id: u64, _verifying_key: VerifyingKey, seed: [u8; 
                                                                                 hasher.update(&bytes);
                                                                                 let file_hash = format!("{:x}", hasher.finalize());
                                                                                 
-                                                                                let _ = worker_tx.send(NodeCommand::PinFile(file_hash.clone()));
+                                                                                let _ = worker_tx.try_send(NodeCommand::PinFile(file_hash.clone()));
                                                                                 let _ = file_hash; // Preserve output.txt hash if WASI
                                                                             }
                                                                         }
@@ -290,13 +290,13 @@ pub async fn run_worker(shard_id: u64, _verifying_key: VerifyingKey, seed: [u8; 
                                                                 result_hash: actual_state_hash // FIX: Gateway receives actual state file hash
                                                             };
                                                             let req = SwarmRequest::SubmitResult(serde_json::to_string(&result_obj).unwrap());
-                                                            let _ = worker_tx.send(NodeCommand::Unicast(gateway_id, req));
+                                                            let _ = worker_tx.try_send(NodeCommand::Unicast(gateway_id, req));
                                                         },
                                                         Err(e) => {
                                                             println!("❌ Sandbox Error: {}", e);
                                                             let result_obj = ShardResult { job_id: shard_data.parent_task_id, shard_index: shard_data.shard_index, result: -1, result_hash: "ERROR".to_string() };
                                                             let req = SwarmRequest::SubmitResult(serde_json::to_string(&result_obj).unwrap());
-                                                            let _ = worker_tx.send(NodeCommand::Unicast(gateway_id, req));
+                                                            let _ = worker_tx.try_send(NodeCommand::Unicast(gateway_id, req));
                                                         }
                                                     }
                                                 }

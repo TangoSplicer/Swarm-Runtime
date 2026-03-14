@@ -1,6 +1,6 @@
 [package]
 name = "swarm-node"
-version = "0.22.1"
+version = "0.25.5"
 edition = "2021"
 
 [dependencies]
