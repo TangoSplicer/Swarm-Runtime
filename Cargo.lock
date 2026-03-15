@@ -1932,7 +1932,7 @@ dependencies = [
 
 [[package]]
 name = "judge"
-version = "0.22.1"
+version = "0.25.5"
 dependencies = [
  "anyhow",
  "cap-std",
@@ -1944,7 +1944,7 @@ dependencies = [
 
 [[package]]
 name = "lazarus"
-version = "0.8.0"
+version = "0.25.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3040,11 +3040,12 @@ dependencies = [
 
 [[package]]
 name = "prism"
-version = "0.13.0"
+version = "0.25.5"
 dependencies = [
  "anyhow",
  "proc-macro2",
  "quote",
+ "sha2",
  "syn 2.0.114",
 ]
 
@@ -3868,7 +3869,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stateful-counter"
-version = "0.1.0"
+version = "0.25.5"
 
 [[package]]
 name = "static_assertions"
@@ -3890,7 +3891,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "swarm-cli"
-version = "0.22.1"
+version = "0.25.5"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3903,7 +3904,7 @@ dependencies = [
 
 [[package]]
 name = "swarm-node"
-version = "0.22.1"
+version = "0.25.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -3952,7 +3953,7 @@ dependencies = [
 
 [[package]]
 name = "synapse"
-version = "0.22.1"
+version = "0.25.5"
 dependencies = [
  "anyhow",
  "libp2p",

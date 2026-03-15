@@ -1,6 +1,6 @@
 # Swarm Runtime: Mobile Termux Environment Setup
 
-To ensure exact reproducibility of the Swarm Runtime (v0.25.0) on Android, this document details the exact Termux ecosystem parameters required.
+To ensure exact reproducibility of the Swarm Runtime (v0.26.0) on Android, this document details the exact Termux ecosystem parameters required.
 
 ## 1. Core System Packages
 ```bash

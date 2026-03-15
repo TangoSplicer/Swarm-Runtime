@@ -13,3 +13,13 @@ Nodes dynamically generate a `.swarm_identity` file. If two workers run in the s
 
 ## Connecting to the Public WAN
 When testing over cellular networks against the Cloud Gateway, ensure `worker.rs` explicitly dials the Oracle IP, as mDNS peer discovery will fail across the public internet.
+
+## Polyglot Runtime Verification (Phase 11)
+Before transitioning to Enterprise Federation, all WASI execution engines must be verified. 
+Ensure the following files are present in the worker's execution directory and test them sequentially via the `swarm deploy` CLI:
+* `python.wasm`
+* `qjs.wasm`
+* `lua.wasm`
+* `ruby.wasm`
+* `php.wasm`
+* `sqlite.wasm`

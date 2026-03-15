@@ -1,7 +1,6 @@
 use syn::{ItemStruct, Item, Fields};
-use anyhow::Result; // FIX: Removed unused 'Context'
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use anyhow::Result;
+use sha2::{Sha256, Digest};
 
 #[derive(Debug, Clone)]
 pub struct StateField {
@@ -17,9 +16,15 @@ pub struct StateManifest {
 }
 
 fn assign_shard(name: &str, shard_count: u64) -> u64 {
-    let mut s = DefaultHasher::new();
-    name.hash(&mut s);
-    s.finish() % shard_count
+    let mut hasher = Sha256::new();
+    hasher.update(name.as_bytes());
+    let result = hasher.finalize();
+    
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&result[0..8]);
+    let deterministic_hash = u64::from_be_bytes(bytes);
+    
+    deterministic_hash % shard_count
 }
 
 pub fn extract_state(ast: &syn::File, shard_count: u64) -> Result<StateManifest> {

@@ -52,7 +52,7 @@ impl SynapseNode {
             .with_behaviour(|key| {
                 let gossipsub_config = gossipsub::ConfigBuilder::default()
                     .heartbeat_interval(Duration::from_secs(1))
-                    .validation_mode(gossipsub::ValidationMode::Permissive)
+                    .validation_mode(gossipsub::ValidationMode::Strict)
                     .build()
                     .map_err(|e| anyhow!("{:?}", e))?;
 
@@ -68,7 +68,7 @@ impl SynapseNode {
                 );
 
                 let req_res_protocol = StreamProtocol::new("/swarm/req-res/1.0.0");
-                let req_res_config = request_response::Config::default().with_request_timeout(std::time::Duration::from_secs(300));
+                let req_res_config = request_response::Config::default().with_request_timeout(std::time::Duration::from_secs(15));
                 let req_res = request_response::cbor::Behaviour::<SwarmRequest, SwarmResponse>::new(
                     [(req_res_protocol, request_response::ProtocolSupport::Full)],
                     req_res_config,

@@ -1,9 +1,10 @@
 [package]
 name = "prism"
-version = "0.13.0"
+version = "0.26.0"
 edition = "2021"
 
 [dependencies]
+sha2 = "0.10"
 syn = { version = "2.0", features = ["full", "parsing"] }
 quote = "1.0"
 proc-macro2 = "1.0"

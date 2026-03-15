@@ -32,7 +32,7 @@ enum Commands {
     Fetch {
         hash: String,
         #[arg(long, default_value = "http://127.0.0.1:3000")]
-        gateway: String,
+        gateways: String,
     },
     /// Deploy a script to the Swarm network
     Deploy {
@@ -40,13 +40,13 @@ enum Commands {
         #[arg(short, long, default_value = "python")]
         lang: String,
         #[arg(long, default_value = "http://127.0.0.1:3000")]
-        gateway: String,
+        gateways: String,
     },
     /// Check the status and output of a deployed job
     Status {
         job_id: String,
         #[arg(long, default_value = "http://127.0.0.1:3000")]
-        gateway: String,
+        gateways: String,
     }
 }
 
@@ -82,7 +82,6 @@ async fn main() -> Result<()> {
         if cli.is_node_command() {
             println!("🌱 Generating new cryptographic identity...");
         }
-        
         let mut key_bytes = [0u8; 32];
         let mut file = std::fs::File::open("/dev/urandom").expect("Failed to open /dev/urandom");
         use std::io::Read;
@@ -103,7 +102,7 @@ async fn main() -> Result<()> {
         Commands::Gateway { port } => {
             gateway::run_gateway(*port, signing_key).await?;
         },
-        Commands::Deploy { file, lang, gateway } => {
+        Commands::Deploy { file, lang, gateways } => {
             let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().unwrap();
             println!("🚀 Preparing deployment for: {}", file);
 
@@ -131,53 +130,79 @@ async fn main() -> Result<()> {
             let metadata = DeployMetadata { dataset };
             let metadata_json = serde_json::to_string(&metadata)?;
 
-            let wasm_part = reqwest::multipart::Part::bytes(wasm_bytes)
-                .file_name(file.clone())
-                .mime_str("application/octet-stream")?;
-            let metadata_part = reqwest::multipart::Part::text(metadata_json)
-                .mime_str("application/json")?;
+            let gw_list: Vec<&str> = gateways.split(',').map(|s| s.trim()).collect();
+            let mut success = false;
 
-            let form = reqwest::multipart::Form::new().part("wasm", wasm_part).part("metadata", metadata_part);
-            let url = format!("{}/api/v1/jobs", gateway.trim_end_matches('/'));
-            
-            println!("📡 Dispatching payload to Gateway at {}...", url);
-            let res = client.post(&url).multipart(form).send().await?;
+            // HA Routing Loop: Try gateways until one succeeds
+            for gw in gw_list {
+                let wasm_part = reqwest::multipart::Part::bytes(wasm_bytes.clone())
+                    .file_name(file.clone())
+                    .mime_str("application/octet-stream")?;
+                let metadata_part = reqwest::multipart::Part::text(metadata_json.clone())
+                    .mime_str("application/json")?;
 
-            if res.status().is_success() {
-                println!("✅ Deployment Successful!\n   Gateway Response: {}", res.text().await?);
-            } else {
-                println!("❌ Deployment Failed (Status: {})\n   Error: {}", res.status(), res.text().await.unwrap_or_default());
-            }
-        },
-        Commands::Status { job_id, gateway } => {
-            let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().unwrap();
-            let url = format!("{}/api/v1/jobs/{}", gateway.trim_end_matches('/'), job_id);
-            let res = client.get(&url).send().await?;
-
-            if res.status().is_success() {
-                let status_data: JobStatusResponse = res.json().await?;
-                println!("\n=== 📊 Swarm Job Status ===");
-                println!("Status:          {}", status_data.status.to_uppercase());
-                if status_data.status == "completed" {
-                    println!("Consensus Hash:  {}", status_data.hashes.first().map(|(_, h)| h.as_str()).unwrap_or("NONE"));
-                    println!("Numeric Result:  {}", status_data.total_sum);
+                let form = reqwest::multipart::Form::new().part("wasm", wasm_part).part("metadata", metadata_part);
+                let url = format!("{}/api/v1/jobs", gw.trim_end_matches('/'));
+                
+                println!("📡 Dispatching payload to Gateway at {}...", url);
+                
+                if let Ok(res) = client.post(&url).multipart(form).send().await {
+                    if res.status().is_success() {
+                        println!("✅ Deployment Successful via {}!\n   Gateway Response: {}", gw, res.text().await.unwrap_or_default());
+                        success = true;
+                        break;
+                    } else {
+                        println!("⚠️ Failed on {} (Status: {})\n   Error: {}", gw, res.status(), res.text().await.unwrap_or_default());
+                    }
                 } else {
-                    println!("Missing Shards:  {:?}", status_data.missing_shards);
+                    println!("⚠️ Failed to connect to {}", gw);
                 }
-                println!("===========================\n");
-            } else {
-                println!("❌ Failed to retrieve status (HTTP {})", res.status());
+            }
+            
+            if !success {
+                println!("❌ Deployment Failed across all federated Gateways.");
             }
         },
-        Commands::Fetch { hash, gateway } => {
+        Commands::Status { job_id, gateways } => {
             let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().unwrap();
-            if let Ok(response) = client.get(format!("{}/api/v1/data/{}", gateway, hash)).send().await {
-                if let Ok(bytes) = response.bytes().await {
-                    let filename = format!("download_{}.bin", &hash[..8]);
-                    let _ = fs::write(&filename, &bytes);
-                    println!("✅ Success! File downloaded to: {}", filename);
+            let gw_list: Vec<&str> = gateways.split(',').map(|s| s.trim()).collect();
+            
+            for gw in gw_list {
+                let url = format!("{}/api/v1/jobs/{}", gw.trim_end_matches('/'), job_id);
+                if let Ok(res) = client.get(&url).send().await {
+                    if res.status().is_success() {
+                        let status_data: JobStatusResponse = res.json().await?;
+                        println!("\n=== 📊 Swarm Job Status ===");
+                        println!("Status:          {}", status_data.status.to_uppercase());
+                        if status_data.status == "completed" {
+                            println!("Consensus Hash:  {}", status_data.hashes.first().map(|(_, h)| h.as_str()).unwrap_or("NONE"));
+                            println!("Numeric Result:  {}", status_data.total_sum);
+                        } else {
+                            println!("Missing Shards:  {:?}", status_data.missing_shards);
+                        }
+                        println!("===========================\n");
+                        return Ok(());
+                    }
                 }
             }
+            println!("❌ Failed to retrieve status from any federated Gateway.");
+        },
+        Commands::Fetch { hash, gateways } => {
+            let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().unwrap();
+            let gw_list: Vec<&str> = gateways.split(',').map(|s| s.trim()).collect();
+            
+            for gw in gw_list {
+                let url = format!("{}/api/v1/data/{}", gw.trim_end_matches('/'), hash);
+                if let Ok(response) = client.get(&url).send().await {
+                    if let Ok(bytes) = response.bytes().await {
+                        let filename = format!("download_{}.bin", &hash[..8]);
+                        let _ = fs::write(&filename, &bytes);
+                        println!("✅ Success! File downloaded via {} to: {}", gw, filename);
+                        return Ok(());
+                    }
+                }
+            }
+            println!("❌ Failed to fetch file from any federated Gateway.");
         }
     }
     Ok(())

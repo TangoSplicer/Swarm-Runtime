@@ -21,14 +21,26 @@ pub async fn run_worker(shard_id: u64, _verifying_key: VerifyingKey, seed: [u8; 
     let mut p2p_node = SynapseNode::new(port, seed).await?;
     let local_peer_id = *p2p_node.swarm.local_peer_id();
     p2p_node.subscribe("swarm-control-plane")?;
+
+    // PHASE 12: High Availability Gateway Federation
+    let bootstrap_nodes = vec![
+        "/ip4/145.241.192.79/tcp/4000/p2p/12D3KooWR6zCohbghjfRyUriggGyq6HKWJxapyziq2icYgXGeEiK", // Oracle Primary
+        // "/ip4/<AWS_IP>/tcp/4000/p2p/<AWS_PEER_ID>", // AWS Secondary (Placeholder)
+    ];
+
+    let mut dialed_any = false;
+    for node_str in bootstrap_nodes {
+        if let Ok(multiaddr) = node_str.parse::<libp2p::Multiaddr>() {
+            if p2p_node.swarm.dial(multiaddr.clone()).is_ok() {
+                println!("🚀 Dialing Federated Gateway: {}", node_str);
+                dialed_any = true;
+            }
+        }
+    }
+    if !dialed_any {
+        println!("⚠️ WARNING: Could not dial any federated Gateways. Operating in local-only mDNS mode.");
     println!("=== Worker Live (Shard {}) on Port {} ===", shard_id, port);
 	        // Explicitly dial the Oracle Cloud Gateway over the public internet
-        let cloud_gateway: libp2p::Multiaddr = "/ip4/145.241.192.79/tcp/4000/p2p/12D3KooWR6zCohbghjfRyUriggGyq6HKWJxapyziq2icYgXGeEiK".parse().unwrap();
-        
-        if let Err(e) = p2p_node.swarm.dial(cloud_gateway) {
-            println!("⚠️ Failed to dial Gateway: {:?}", e);
-        } else {
-            println!("🚀 Dialing Oracle Cloud Gateway...");
         }
 
     let pending_dials = Arc::new(DashMap::<libp2p::PeerId, Instant>::new());
@@ -74,6 +86,7 @@ pub async fn run_worker(shard_id: u64, _verifying_key: VerifyingKey, seed: [u8; 
                 match cmd {
                     NodeCommand::Unicast(peer, req) => { let _ = p2p_node.send_request(&peer, req); },
                     NodeCommand::Broadcast(msg) => { let _ = p2p_node.publish_to_topic("swarm-control-plane", msg); },
+                        NodeCommand::GatewaySync(_) => {},
                     NodeCommand::FetchFile(_, _) => {}, 
                         NodeCommand::Disconnect(peer) => {
                         println!("⛔ BANNING PEER: {}", peer);

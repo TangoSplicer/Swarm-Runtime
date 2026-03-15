@@ -22,6 +22,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
     let mut p2p_node = SynapseNode::new(4000, signing_key.to_bytes()).await?;
     let local_peer_id = *p2p_node.swarm.local_peer_id();
     p2p_node.subscribe("swarm-control-plane")?;
+    p2p_node.subscribe("swarm-gateway-sync")?;
     let (tx, mut rx) = tokio::sync::mpsc::channel::<NodeCommand>(1000);
 
     let jobs = Arc::new(DashMap::new());
@@ -225,6 +226,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                     match cmd {
                         NodeCommand::Unicast(peer, req) => { let _ = p2p_node.send_request(&peer, req); },
                         NodeCommand::Broadcast(msg) => { let _ = p2p_node.publish_to_topic("swarm-control-plane", msg); },
+                        NodeCommand::GatewaySync(msg) => { let _ = p2p_node.publish_to_topic("swarm-gateway-sync", msg); },
                         NodeCommand::Disconnect(peer) => { let _ = p2p_node.swarm.disconnect_peer_id(peer); },
                         NodeCommand::PinFile(_) => {}
                         NodeCommand::FetchFile(hash, reply_tx) => {
@@ -241,6 +243,18 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                     match event {
                         SwarmEvent::Behaviour(SynapseBehaviorEvent::Gossipsub(gossipsub::Event::Message { message, .. })) => {
                             let text = String::from_utf8_lossy(&message.data);
+                            if text.starts_with("SYNC_STATE:") {
+                                let payload = text[11..].to_string();
+                                let cs_clone = contract_states_c.clone();
+                                tokio::spawn(async move {
+                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&payload) {
+                                        if let (Some(k), Some(v)) = (parsed.get("k").and_then(|v| v.as_str()), parsed.get("v").and_then(|v| v.as_str())) {
+                                            cs_clone.insert(k.to_string(), v.to_string());
+                                            println!("🔄 FEDERATION: Synced State Hash [{}] from Peer Gateway", &v[..8]);
+                                        }
+                                    }
+                                });
+                            }
                             if text.starts_with("TEL:") {
                                 if let Ok(tel) = serde_json::from_str::<Telemetry>(&text[4..]) {
                                     if let Ok(peer) = tel.peer_id.parse::<libp2p::PeerId>() {
@@ -310,7 +324,9 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                                                         let mut hasher = Sha256::new();
                                                         hasher.update(&guard.wasm_image);
                                                         let contract_key = hex::encode(hasher.finalize());
-                                                        contract_states_c.insert(contract_key, final_hash.clone());
+                                                        contract_states_c.insert(contract_key.clone(), final_hash.clone());
+                                                        let sync_msg = format!("SYNC_STATE:{{\"k\":\"{}\",\"v\":\"{}\"}}", contract_key, final_hash);
+                                                        let _ = tx.try_send(NodeCommand::GatewaySync(sync_msg));
                                                     }
                                                 } else {
                                                     println!("🚨 HASH COLLISION DETECTED! State mutation mismatch on Shard {}.", res_data.shard_index);
