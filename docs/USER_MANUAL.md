@@ -13,9 +13,9 @@ To connect a mobile Edge Worker to a Public Cloud Gateway:
 ## 2. Deploying Stateful Smart Contracts
 Use the built-in CLI to stream Polyglot scripts or raw WebAssembly binaries to the Gateway.
 
-* **Deploy Python (Federated):** `cargo run --bin swarm-node -- deploy app.py --lang python --gateways http://<PRIMARY_IP>:3000,http://<SECONDARY_IP>:3000`
-* **Deploy JS:** `cargo run --bin swarm-node -- deploy script.js --lang js --gateway http://<PUBLIC_IP>:3000`
-* **Deploy WASM:** `cargo run --bin swarm-node -- deploy module.wasm --lang wasm --gateway http://<PUBLIC_IP>:3000`
+* **Deploy Python (Federated):** `cargo run --bin swarm-node -- deploy test_payloads/test_python.py --lang python --gateways http://<PRIMARY_IP>:3000,http://<SECONDARY_IP>:3000`
+* **Deploy JS:** `cargo run --bin swarm-node -- deploy test_payloads/test_js.js --lang js --gateway http://<PUBLIC_IP>:3000`
+* **Deploy WASM:** `cargo run --bin swarm-node -- deploy runtimes/calculator.wasm --lang wasm --gateway http://<PUBLIC_IP>:3000`
 
 ## 3. Checking Status & Consensus
 Query the Gateway to view distributed execution status and the resulting Output Hash.

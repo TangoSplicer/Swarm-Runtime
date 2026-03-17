@@ -10,7 +10,7 @@ To connect a mobile Worker to the Oracle Cloud Gateway, the Worker code must con
 `/ip4/<ORACLE_PUBLIC_IP>/tcp/4000/p2p/<GATEWAY_PEER_ID>`
 
 ## 2. Polyglot Runtimes (WASI Binaries)
-Workers MUST explicitly verify the execution of the following pre-cached engines in their execution directory:
+Workers MUST explicitly verify the execution of the following pre-cached engines inside the `runtimes/` directory:
 * `python.wasm` (CPython 3.11)
 * `qjs.wasm` (QuickJS)
 * `lua.wasm` (Lua 5.4 - Patched)

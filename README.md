@@ -13,7 +13,7 @@ Swarm Runtime turns Android devices into a fault-tolerant compute cluster. It us
 * **Strict Cryptography:** Network bounds hardened with strict Gossipsub signature validation and SHA-256 deterministic sharding.
 
 ## 🏗 Architecture: The Polyglot & Compiled Pipeline
-1. **Queue:** Client submits code via the `swarm-node deploy` CLI to any federated Gateway.
+1. **Queue:** Client submits code via the `swarm-node deploy` CLI (e.g., `test_payloads/test_python.py`) to any federated Gateway.
 2. **Profile:** Workers broadcast `sysinfo` hardware metrics every 10s via Gossipsub. 
 3. **Dispatch & Sync:** Gateway attaches the latest known state hash. Workers verify local state matches, downloading peer states via Kademlia DHT if necessary.
 4. **Compute:** Workers boot the WASI environment, inject the previous memory state, execute the code, and hash the resulting state.
