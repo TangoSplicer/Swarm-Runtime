@@ -913,6 +913,7 @@ checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
 dependencies = [
  "curve25519-dalek",
  "ed25519",
+ "rand_core 0.6.4",
  "serde",
  "sha2",
  "subtle",
@@ -1932,7 +1933,7 @@ dependencies = [
 
 [[package]]
 name = "judge"
-version = "0.25.5"
+version = "0.26.0"
 dependencies = [
  "anyhow",
  "cap-std",
@@ -1944,7 +1945,7 @@ dependencies = [
 
 [[package]]
 name = "lazarus"
-version = "0.25.5"
+version = "0.26.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3040,7 +3041,7 @@ dependencies = [
 
 [[package]]
 name = "prism"
-version = "0.25.5"
+version = "0.26.0"
 dependencies = [
  "anyhow",
  "proc-macro2",
@@ -3869,7 +3870,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stateful-counter"
-version = "0.25.5"
+version = "0.26.0"
 
 [[package]]
 name = "static_assertions"
@@ -3891,7 +3892,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "swarm-cli"
-version = "0.25.5"
+version = "0.26.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3904,7 +3905,7 @@ dependencies = [
 
 [[package]]
 name = "swarm-node"
-version = "0.25.5"
+version = "0.26.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3918,6 +3919,7 @@ dependencies = [
  "judge",
  "libp2p",
  "log",
+ "rand 0.8.5",
  "reqwest 0.13.2",
  "serde",
  "serde_json",
@@ -3953,7 +3955,7 @@ dependencies = [
 
 [[package]]
 name = "synapse"
-version = "0.25.5"
+version = "0.26.0"
 dependencies = [
  "anyhow",
  "libp2p",

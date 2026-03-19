@@ -24,3 +24,11 @@ When deploying the Gateway to an Oracle Cloud Ubuntu instance, traffic failed to
 ## The Permissive Gossip & Infinite Timeout Trap (Phase 12)
 **The Trap:** `request_response` channels defaulting to 300s timeouts caused massive memory leaks when Termux workers dropped cellular connections. Furthermore, permissive Gossipsub allowed potential BFT poisoning.
 **Solution:** Reduced timeouts strictly to 15s. Locked Gossipsub `ValidationMode` to `Strict` to cryptographically verify every packet in the control plane.
+
+## The O(n²) Array Search Bottleneck (Phase 13)
+**The Trap:** Iterating through missing execution shards using `.contains()` on a standard `Vec` caused CPU spikes scaling quadratically with the number of shards.
+**Solution:** Converted the tracked shard arrays into Rust `HashSet`s, reducing shard verification lookup time to a mathematically guaranteed O(1).
+
+## The WebAssembly Payload Corruption Trap (Phase 13)
+**The Trap:** Injecting state into WebAssembly memory by directly appending `|STATE:` byte strings to the end of the binary violated WASM specifications and risked corrupting executable data segments.
+**Solution:** Transitioned to the `cap-std` library. State is now securely mounted as a Virtual File System (VMFS) node, allowing WASI-compliant guest modules to read state via standard POSIX file descriptors.

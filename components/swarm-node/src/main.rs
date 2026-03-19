@@ -7,9 +7,11 @@ use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use ed25519_dalek::SigningKey;
+use rand::rngs::OsRng; // PHASE 13: Added for cross-platform CSPRNG
 
 #[derive(Parser)]
 #[command(name = "swarm-node")]
+#[command(version = env!("CARGO_PKG_VERSION"))] // PHASE 13: Dynamic CLI Versioning
 #[command(about = "Swarm Runtime - Unified Node & CLI", long_about = None)]
 struct Cli {
     #[command(subcommand)]
@@ -67,6 +69,11 @@ struct JobStatusResponse {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // PHASE 13: Dynamic Versioning Banner
+    if cli.is_node_command() {
+        println!("🐝 Swarm Runtime v{} - Initializing...", env!("CARGO_PKG_VERSION"));
+    }
     
     // 1. Unified Cryptographic Identity Loading
     let id_path = ".swarm_identity";
@@ -82,11 +89,10 @@ async fn main() -> Result<()> {
         if cli.is_node_command() {
             println!("🌱 Generating new cryptographic identity...");
         }
-        let mut key_bytes = [0u8; 32];
-        let mut file = std::fs::File::open("/dev/urandom").expect("Failed to open /dev/urandom");
-        use std::io::Read;
-        file.read_exact(&mut key_bytes).expect("Failed to read random bytes");
-        let key = SigningKey::from_bytes(&key_bytes);
+        
+        // PHASE 13: Cross-Platform Cryptography (WORA)
+        let mut csprng = OsRng;
+        let key = SigningKey::generate(&mut csprng);
         fs::write(id_path, key.to_bytes()).context("Failed to write identity")?;
         key
     };
@@ -135,9 +141,11 @@ async fn main() -> Result<()> {
 
             // HA Routing Loop: Try gateways until one succeeds
             for gw in gw_list {
+                // PHASE 13: Strict MIME Type enforcement to pass Gateway Gateway validation
                 let wasm_part = reqwest::multipart::Part::bytes(wasm_bytes.clone())
                     .file_name(file.clone())
-                    .mime_str("application/octet-stream")?;
+                    .mime_str("application/wasm")?; 
+                    
                 let metadata_part = reqwest::multipart::Part::text(metadata_json.clone())
                     .mime_str("application/json")?;
 

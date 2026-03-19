@@ -32,8 +32,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
     let health_registry = Arc::new(DashMap::new());
     let pending_dials = Arc::new(DashMap::<libp2p::PeerId, Instant>::new());
     let telemetry_registry = Arc::new(DashMap::<libp2p::PeerId, Telemetry>::new());
-    
-    // PHASE 8: Global State Tracker
+
     let contract_states = Arc::new(DashMap::<String, String>::new());
 
     let shared_state = Arc::new(AppState {
@@ -42,7 +41,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
         telemetry_registry: telemetry_registry.clone(),
         signing_key: signing_key.clone(),
     });
-    let (jobs_c, stat_c, health_c, pending_c, tel_c, contract_states_c) = 
+    let (jobs_c, stat_c, health_c, pending_c, tel_c, contract_states_c) =
         (jobs.clone(), stats.clone(), health_registry.clone(), pending_dials.clone(), telemetry_registry.clone(), contract_states.clone());
 
     tokio::spawn(async move {
@@ -57,14 +56,13 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                     let mut new_dispatches = Vec::new();
                     let mut jobs_to_prune = Vec::new();
 
-                    for entry in jobs_c.iter_mut() {
-                        let mut job = entry.value().lock().await;
-                        let job_id = *entry.key();
+                    let active_peers: Vec<_> = stat_c.lock().await.peers.iter().copied().collect();
+                    let jobs_snapshot: Vec<(Uuid, Arc<Mutex<JobState>>)> = jobs_c.iter().map(|entry| (*entry.key(), entry.value().clone())).collect();
+
+                    for (job_id, job_arc) in jobs_snapshot {
+                        let mut job = job_arc.lock().await;
 
                         if let Some(dataset) = job.unassigned_dataset.take() {
-                            let s = stat_c.lock().await;
-                            let active_peers: Vec<_> = s.peers.iter().copied().collect();
-
                             if active_peers.is_empty() || tel_c.is_empty() {
                                 job.unassigned_dataset = Some(dataset);
                                 continue;
@@ -84,22 +82,21 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                             }
 
                             peer_fitness.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                            
+
                             let is_stateful = !job.wasm_image.is_empty() && job.wasm_image != b"NONE";
 
                             if is_stateful {
                                 job.expected_shards = 1;
-                                
-                                // PHASE 8: Attach Latest State Hash to Payload
+
                                 let mut hasher = Sha256::new();
                                 hasher.update(&job.wasm_image);
                                 let contract_key = hex::encode(hasher.finalize());
-                                
+
                                 let mut out_wasm_image = job.wasm_image.clone();
                                 if let Some(latest_state) = contract_states_c.get(&contract_key) {
                                     let mut final_wasm = out_wasm_image.clone(); final_wasm.extend_from_slice(b"|STATE:"); final_wasm.extend_from_slice(latest_state.value().as_bytes()); out_wasm_image = final_wasm;
                                 }
-                                
+
                                 let primary_peer = peer_fitness[0].0;
                                 let shard = Shard {
                                     parent_task_id: job_id,
@@ -191,9 +188,9 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
 
                             for failed_peer in failed_peers {
                                 if let Some(shard_data) = job.shards_data.get(&shard_idx).cloned() {
-                                    let s = stat_c.lock().await;
-                                    let current_assignees: Vec<_> = job.assignments.get(&shard_idx).unwrap().keys().cloned().collect();
-                                    let idle_peer = s.peers.iter().find(|&&p| !current_assignees.contains(&p)).copied();
+                                    // PHASE 13: O(1) Lookup - Using HashSet instead of Vec
+                                    let current_assignees: HashSet<_> = job.assignments.get(&shard_idx).unwrap().keys().cloned().collect();
+                                    let idle_peer = active_peers.iter().find(|&&p| !current_assignees.contains(&p)).copied();
 
                                     if let Some(new_peer) = idle_peer {
                                         let assignments = job.assignments.get_mut(&shard_idx).unwrap();
@@ -219,7 +216,10 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
 
                         let signed_payload = SignedPayload { payload_json, expires_at, signature: signature.to_bytes().to_vec() };
                         let req = SwarmRequest::DispatchShard(serde_json::to_string(&signed_payload).unwrap());
-                        let _ = tx.try_send(NodeCommand::Unicast(peer, req));
+                        
+                        if let Err(e) = tx.try_send(NodeCommand::Unicast(peer, req)) {
+                            eprintln!("⚠️ BACKPRESSURE ALARM: Failed to send DispatchShard: {}", e);
+                        }
                     }
                 },
                 Some(cmd) = rx.recv() => {
@@ -290,8 +290,11 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
 
                                 if let Ok(res_data) = serde_json::from_str::<ShardResult>(&json_payload) {
                                     health_c.remove(&peer);
-                                    if let Some(job_ref) = jobs_c.get(&res_data.job_id) {
-                                        let mut guard = job_ref.value().lock().await;
+                                    
+                                    let job_arc_opt = jobs_c.get(&res_data.job_id).map(|ref_val| ref_val.value().clone());
+                                    
+                                    if let Some(job_arc) = job_arc_opt {
+                                        let mut guard = job_arc.lock().await;
 
                                         if guard.verified_results.contains_key(&res_data.shard_index) { continue; }
 
@@ -308,8 +311,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                                         if is_consensus_ready {
                                             if let Some(shard_results) = guard.raw_results.remove(&res_data.shard_index) {
                                                 let mut unique_results: Vec<(i32, String)> = shard_results.values().cloned().collect();
-                                                unique_results.dedup();
-
+                                                unique_results.dedup();     
                                                 if unique_results.len() == 1 {
                                                     let (final_result, final_hash) = &unique_results[0];
 
@@ -317,21 +319,25 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                                                     println!("✅ HASH CONSENSUS REACHED: Shard {} state verified [{}]", res_data.shard_index, final_display);
 
                                                     guard.verified_results.insert(res_data.shard_index, (*final_result, final_hash.clone()));
-                                                    
-                                                    // PHASE 8: Store verified state hash
-                                                    let is_stateful = !guard.wasm_image.is_empty() && guard.wasm_image != b"NONE";
+
+                                                                                                        let is_stateful = !guard.wasm_image.is_empty() && guard.wasm_image != b"NONE";
                                                     if is_stateful && res_data.shard_index == 0 {
                                                         let mut hasher = Sha256::new();
                                                         hasher.update(&guard.wasm_image);
                                                         let contract_key = hex::encode(hasher.finalize());
                                                         contract_states_c.insert(contract_key.clone(), final_hash.clone());
                                                         let sync_msg = format!("SYNC_STATE:{{\"k\":\"{}\",\"v\":\"{}\"}}", contract_key, final_hash);
-                                                        let _ = tx.try_send(NodeCommand::GatewaySync(sync_msg));
+                                                        if let Err(e) = tx.try_send(NodeCommand::GatewaySync(sync_msg)) {
+                                                            eprintln!("⚠️ BACKPRESSURE ALARM: Failed to send GatewaySync: {}", e);
+                                                        }
                                                     }
+
                                                 } else {
                                                     println!("🚨 HASH COLLISION DETECTED! State mutation mismatch on Shard {}.", res_data.shard_index);
                                                     for (p, _) in shard_results.iter() {
-                                                        let _ = tx.try_send(NodeCommand::Disconnect(*p));
+                                                        if let Err(e) = tx.try_send(NodeCommand::Disconnect(*p)) {
+                                                            eprintln!("⚠️ BACKPRESSURE ALARM: Failed to send Disconnect: {}", e);
+                                                        }
                                                     }
                                                     guard.assignments.remove(&res_data.shard_index);
                                                 }
@@ -418,8 +424,10 @@ async fn submit_job(State(state): State<Arc<AppState>>, mut multipart: axum::ext
 }
 
 async fn get_job_status(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>) -> (StatusCode, Json<JobStatusResponse>) {
-    if let Some(job_ref) = state.jobs.get(&id) {
-        let guard = job_ref.lock().await;
+    let job_arc_opt = state.jobs.get(&id).map(|r| r.value().clone());
+    
+    if let Some(job_arc) = job_arc_opt {
+        let guard = job_arc.lock().await;
 
         if guard.unassigned_dataset.is_some() {
             return (StatusCode::ACCEPTED, Json(JobStatusResponse {
@@ -433,7 +441,8 @@ async fn get_job_status(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>
         let breakdown: Vec<(u32, i32)> = guard.verified_results.iter().map(|(k, v)| (*k, v.0)).collect();
         let hashes: Vec<(u32, String)> = guard.verified_results.iter().map(|(k, v)| (*k, v.1.clone())).collect();
 
-        let received_indices: Vec<u32> = guard.verified_results.keys().copied().collect();
+        // PHASE 13: O(1) Lookup - Using HashSet instead of Vec
+        let received_indices: HashSet<u32> = guard.verified_results.keys().copied().collect();
         let missing_indices: Vec<u32> = (0..guard.expected_shards as u32).filter(|i| !received_indices.contains(i)).collect();
 
         if is_complete {
@@ -450,14 +459,17 @@ async fn dashboard(State(_state): State<Arc<AppState>>) -> Html<String> {
     Html(r#"
         <div style="font-family: sans-serif; padding: 2rem;">
             <h1>🐝 Swarm Runtime Gateway</h1>
-            <p><strong>Version:</strong> v0.23.0 (Stateful Sync)</p>
+            <p><strong>Version:</strong> v0.26.0 (Enterprise Federation)</p>
         </div>
     "#.to_string())
 }
 
 async fn fetch_data(State(state): State<Arc<AppState>>, Path(hash): Path<String>) -> (StatusCode, Vec<u8>) {
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let _ = state.node_tx.try_send(NodeCommand::FetchFile(hash.clone(), tx));
+    
+    if let Err(e) = state.node_tx.try_send(NodeCommand::FetchFile(hash.clone(), tx)) {
+        eprintln!("⚠️ BACKPRESSURE ALARM: Failed to send FetchFile: {}", e);
+    }
 
     match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
         Ok(Ok(Some(bytes))) => (StatusCode::OK, bytes),
