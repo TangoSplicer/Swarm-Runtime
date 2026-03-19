@@ -5,7 +5,7 @@
 * **Termux Native:** All Edge Workers must run on Android via Termux. No Docker.
 * **Cloud Gateways:** Orchestration Gateways must run on accessible public IPs to serve as permanent DHT anchors.
 
-## 2. Project State (v0.27.0 Enterprise Federation)
+## 2. Project State (v0.28.0 Enterprise Federation)
 * **Architecture:** Active-Active Global Public Mesh.
 * **Gateways:** Federated Orchestration Gateways (e.g., Oracle & AWS) sync BFT state hashes seamlessly via `swarm-gateway-sync` Gossipsub.
 * **Workers:** Android mobile nodes with High Availability (HA) routing. If Gateway A fails, Workers instantly dial Gateway B.

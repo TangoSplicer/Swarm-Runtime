@@ -9,7 +9,7 @@ use axum::{
     http::StatusCode
 };
 use std::sync::Arc;
-use std::collections::{HashSet, HashMap};
+use std::collections::{HashSet, HashMap, BTreeMap};
 use dashmap::DashMap;
 use uuid::Uuid;
 use tokio::sync::Mutex;
@@ -27,7 +27,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
 
     let jobs = Arc::new(DashMap::new());
     let stats = Arc::new(Mutex::new(SwarmStatus {
-        version: "0.22.1".to_string(), role: "GATEWAY".to_string(), peers_count: 0, peers: HashSet::new(),
+        version: "0.26.0".to_string(), role: "GATEWAY".to_string(), peers_count: 0, peers: HashSet::new(),
     }));
     let health_registry = Arc::new(DashMap::new());
     let pending_dials = Arc::new(DashMap::<libp2p::PeerId, Instant>::new());
@@ -41,6 +41,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
         telemetry_registry: telemetry_registry.clone(),
         signing_key: signing_key.clone(),
     });
+    
     let (jobs_c, stat_c, health_c, pending_c, tel_c, contract_states_c) =
         (jobs.clone(), stats.clone(), health_registry.clone(), pending_dials.clone(), telemetry_registry.clone(), contract_states.clone());
 
@@ -67,8 +68,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                                 job.unassigned_dataset = Some(dataset);
                                 continue;
                             }
-
-                            job.redundancy = 2.min(active_peers.len());
+job.redundancy = 2.min(active_peers.len());
                             println!("🧠 SCHEDULER: Optimizing workload with Redundancy Factor {}...", job.redundancy);
 
                             let mut peer_fitness = Vec::new();
@@ -148,7 +148,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
 
                                     let mut peer_assignments = HashMap::new();
 
-                                    peer_assignments.insert(*primary_peer, Instant::now());
+peer_assignments.insert(*primary_peer, Instant::now());
                                     new_dispatches.push((*primary_peer, shard.clone()));
 
                                     if job.redundancy > 1 {
@@ -188,7 +188,6 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
 
                             for failed_peer in failed_peers {
                                 if let Some(shard_data) = job.shards_data.get(&shard_idx).cloned() {
-                                    // PHASE 13: O(1) Lookup - Using HashSet instead of Vec
                                     let current_assignees: HashSet<_> = job.assignments.get(&shard_idx).unwrap().keys().cloned().collect();
                                     let idle_peer = active_peers.iter().find(|&&p| !current_assignees.contains(&p)).copied();
 
@@ -288,63 +287,118 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                             } else if let request_response::Message::Request { request: SwarmRequest::SubmitResult(json_payload), channel, .. } = message {
                                 p2p_node.send_response(channel, SwarmResponse::Ack);
 
-                                if let Ok(res_data) = serde_json::from_str::<ShardResult>(&json_payload) {
-                                    health_c.remove(&peer);
-                                    
-                                    let job_arc_opt = jobs_c.get(&res_data.job_id).map(|ref_val| ref_val.value().clone());
-                                    
-                                    if let Some(job_arc) = job_arc_opt {
-                                        let mut guard = job_arc.lock().await;
+                                let jobs_clone = jobs_c.clone();
+                                let health_clone = health_c.clone();
+                                let contract_states_clone = contract_states_c.clone();
+                                let tx_clone = tx.clone();
+                                // PHASE 14 & THE TOKIO ASYNC LAW: 
+                                // Offloading strict lock operations to a dedicated spawned task prevents blocking the Libp2p loop
+                                tokio::spawn(async move {
+                                    if let Ok(res_data) = serde_json::from_str::<ShardResult>(&json_payload) {
+                                        health_clone.remove(&peer);
+                                        
+                                        let job_arc_opt = jobs_clone.get(&res_data.job_id).map(|ref_val| ref_val.value().clone());
+                                        
+                                        if let Some(job_arc) = job_arc_opt {
+                                            let mut guard = job_arc.lock().await;
 
-                                        if guard.verified_results.contains_key(&res_data.shard_index) { continue; }
+                                            if guard.verified_results.contains_key(&res_data.shard_index) { return; }
 
-                                        let is_consensus_ready = {
-                                            let shard_results = guard.raw_results.entry(res_data.shard_index).or_insert_with(HashMap::new);
-                                            shard_results.insert(peer, (res_data.result, res_data.result_hash.clone()));
+                                            let is_consensus_ready = {
+                                                let shard_results = guard.raw_results.entry(res_data.shard_index).or_insert_with(HashMap::new);
+                                                shard_results.insert(peer, (res_data.result, res_data.result_hash.clone(), res_data.state_delta.clone(), res_data.execution_timestamp));
 
-                                            let display_hash = if res_data.result_hash.len() >= 8 { &res_data.result_hash[..8] } else { &res_data.result_hash };
-                                            println!("📩 Received Result Hash: [{}] from {}", display_hash, peer);
+                                                let display_hash = if res_data.result_hash.len() >= 8 { &res_data.result_hash[..8] } else { &res_data.result_hash };
+                                                println!("📩 Received Result Hash: [{}] from {}", display_hash, peer);
 
-                                            shard_results.len() >= guard.redundancy
-                                        };
+                                                shard_results.len() >= guard.redundancy
+                                            };
 
-                                        if is_consensus_ready {
-                                            if let Some(shard_results) = guard.raw_results.remove(&res_data.shard_index) {
-                                                let mut unique_results: Vec<(i32, String)> = shard_results.values().cloned().collect();
-                                                unique_results.dedup();     
-                                                if unique_results.len() == 1 {
-                                                    let (final_result, final_hash) = &unique_results[0];
-
-                                                    let final_display = if final_hash.len() >= 8 { &final_hash[..8] } else { final_hash };
-                                                    println!("✅ HASH CONSENSUS REACHED: Shard {} state verified [{}]", res_data.shard_index, final_display);
-
-                                                    guard.verified_results.insert(res_data.shard_index, (*final_result, final_hash.clone()));
-
-                                                                                                        let is_stateful = !guard.wasm_image.is_empty() && guard.wasm_image != b"NONE";
-                                                    if is_stateful && res_data.shard_index == 0 {
-                                                        let mut hasher = Sha256::new();
-                                                        hasher.update(&guard.wasm_image);
-                                                        let contract_key = hex::encode(hasher.finalize());
-                                                        contract_states_c.insert(contract_key.clone(), final_hash.clone());
-                                                        let sync_msg = format!("SYNC_STATE:{{\"k\":\"{}\",\"v\":\"{}\"}}", contract_key, final_hash);
-                                                        if let Err(e) = tx.try_send(NodeCommand::GatewaySync(sync_msg)) {
-                                                            eprintln!("⚠️ BACKPRESSURE ALARM: Failed to send GatewaySync: {}", e);
-                                                        }
+                                            if is_consensus_ready {
+                                                if let Some(shard_results) = guard.raw_results.remove(&res_data.shard_index) {
+                                                    // BFT Deduplication based strictly on matching results & hashes
+                                                    let mut unique_hashes: HashMap<String, (i32, String, BTreeMap<String, String>, u64)> = HashMap::new();
+                                                    for (r, h, d, ts) in shard_results.values() {
+                                                        unique_hashes.insert(h.clone(), (*r, h.clone(), d.clone(), *ts));
                                                     }
 
-                                                } else {
-                                                    println!("🚨 HASH COLLISION DETECTED! State mutation mismatch on Shard {}.", res_data.shard_index);
-                                                    for (p, _) in shard_results.iter() {
-                                                        if let Err(e) = tx.try_send(NodeCommand::Disconnect(*p)) {
-                                                            eprintln!("⚠️ BACKPRESSURE ALARM: Failed to send Disconnect: {}", e);
+                                                    if unique_hashes.len() == 1 {
+                                                        let (_, (final_result, final_hash, final_delta, final_ts)) = unique_hashes.into_iter().next().unwrap();
+
+                                                        let final_display = if final_hash.len() >= 8 { &final_hash[..8] } else { &final_hash };
+                                                        println!("✅ HASH CONSENSUS REACHED: Shard {} state verified [{}]", res_data.shard_index, final_display);
+
+                                                        guard.verified_results.insert(res_data.shard_index, (final_result, final_hash.clone(), final_delta, final_ts));
+
+                                                        // PHASE 14: MULTI-SHARD HYBRID CRDT MERGE
+                                                        if guard.verified_results.len() == guard.expected_shards {
+                                                            println!("🌐 ALL SHARDS VERIFIED! Initiating Phase 14 Multi-Shard State Merge...");
+                                                            
+                                                            let mut master_state: BTreeMap<String, String> = BTreeMap::new();
+                                                            let mut key_timestamps: HashMap<String, u64> = HashMap::new();
+
+                                                            for (_, _, delta, ts) in guard.verified_results.values() {
+                                                                for (k, v) in delta {
+                                                                    if let Some(existing_v) = master_state.get(k) {
+                                                                        // Commutative Addition for numerics
+                                                                        if let (Ok(ex_i64), Ok(new_i64)) = (existing_v.parse::<i64>(), v.parse::<i64>()) {
+                                                                            master_state.insert(k.clone(), (ex_i64 + new_i64).to_string());
+                                                                        } 
+                                                                        else if let (Ok(ex_f64), Ok(new_f64)) = (existing_v.parse::<f64>(), v.parse::<f64>()) {
+                                                                            master_state.insert(k.clone(), (ex_f64 + new_f64).to_string());
+                                                                        } 
+                                                                        // Last-Write-Wins for strings/objects
+                                                                        else {
+                                                                            let existing_ts = key_timestamps.get(k).copied().unwrap_or(0);
+                                                                            if *ts > existing_ts {
+                                                                                master_state.insert(k.clone(), v.clone());
+                                                                                key_timestamps.insert(k.clone(), *ts);
+                                                                            }
+                                                                        }
+                                                                    } else {
+                                                                        master_state.insert(k.clone(), v.clone());
+                                                                        key_timestamps.insert(k.clone(), *ts);
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            // Generate Deterministic Canonical Zero-Whitespace Hash
+                                                            let merged_json = serde_json::to_string(&master_state).unwrap();
+                                                            let mut hasher = Sha256::new();
+                                                            hasher.update(merged_json.as_bytes());
+                                                            let final_master_hash = hex::encode(hasher.finalize());
+                                                            
+                                                            println!("🚀 PHASE 14 MERGE COMPLETE: Master State Hash -> [{}]", final_master_hash);
+                                                            guard.master_state_hash = Some(final_master_hash.clone());
+
+                                                            let is_stateful = !guard.wasm_image.is_empty() && guard.wasm_image != b"NONE";
+                                                            if is_stateful {
+                                                                let mut img_hasher = Sha256::new();
+                                                                img_hasher.update(&guard.wasm_image);
+                                                                let contract_key = hex::encode(img_hasher.finalize());
+                                                                
+                                                                contract_states_clone.insert(contract_key.clone(), final_master_hash.clone());
+                                                                let sync_msg = format!("SYNC_STATE:{{\"k\":\"{}\",\"v\":\"{}\"}}", contract_key, final_master_hash);
+                                                                
+                                                                if let Err(e) = tx_clone.try_send(NodeCommand::GatewaySync(sync_msg)) {
+                                                                    eprintln!("⚠️ BACKPRESSURE ALARM: Failed to send GatewaySync: {}", e);
+                                                                }
+                                                            }
                                                         }
+                                                    } else {
+                                                        println!("🚨 HASH COLLISION DETECTED! State mutation mismatch on Shard {}.", res_data.shard_index);
+                                                        for p in shard_results.keys() {
+                                                            if let Err(e) = tx_clone.try_send(NodeCommand::Disconnect(*p)) {
+                                                                eprintln!("⚠️ BACKPRESSURE ALARM: Failed to send Disconnect: {}", e);
+                                                            }
+                                                        }
+                                                        guard.assignments.remove(&res_data.shard_index);
                                                     }
-                                                    guard.assignments.remove(&res_data.shard_index);
                                                 }
                                             }
                                         }
                                     }
-                                }
+                                });
                             }
                         },
                         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
@@ -406,6 +460,7 @@ async fn submit_job(State(state): State<Arc<AppState>>, mut multipart: axum::ext
         redundancy: 2,
         raw_results: HashMap::new(),
         verified_results: HashMap::new(),
+        master_state_hash: None,
         created_at: Instant::now(),
         assignments: HashMap::new(),
         shards_data: HashMap::new(),
@@ -431,27 +486,26 @@ async fn get_job_status(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>
 
         if guard.unassigned_dataset.is_some() {
             return (StatusCode::ACCEPTED, Json(JobStatusResponse {
-                status: "awaiting_telemetry".to_string(), total_sum: 0, breakdown: vec![], hashes: vec![], missing_shards: vec![]
+                status: "awaiting_telemetry".to_string(), total_sum: 0, breakdown: vec![], hashes: vec![], missing_shards: vec![], master_state_hash: None
             }));
         }
 
         let is_complete = guard.verified_results.len() >= guard.expected_shards;
-        let sum: i32 = guard.verified_results.values().map(|(res, _)| *res).sum();
+        let sum: i32 = guard.verified_results.values().map(|v| v.0).sum();
 
         let breakdown: Vec<(u32, i32)> = guard.verified_results.iter().map(|(k, v)| (*k, v.0)).collect();
         let hashes: Vec<(u32, String)> = guard.verified_results.iter().map(|(k, v)| (*k, v.1.clone())).collect();
 
-        // PHASE 13: O(1) Lookup - Using HashSet instead of Vec
         let received_indices: HashSet<u32> = guard.verified_results.keys().copied().collect();
         let missing_indices: Vec<u32> = (0..guard.expected_shards as u32).filter(|i| !received_indices.contains(i)).collect();
 
         if is_complete {
-            (StatusCode::OK, Json(JobStatusResponse { status: "completed".to_string(), total_sum: sum, breakdown, hashes, missing_shards: vec![] }))
+            (StatusCode::OK, Json(JobStatusResponse { status: "completed".to_string(), total_sum: sum, breakdown, hashes, missing_shards: vec![], master_state_hash: guard.master_state_hash.clone() }))
         } else {
-            (StatusCode::PARTIAL_CONTENT, Json(JobStatusResponse { status: "partial".to_string(), total_sum: sum, breakdown, hashes, missing_shards: missing_indices }))
+            (StatusCode::PARTIAL_CONTENT, Json(JobStatusResponse { status: "partial".to_string(), total_sum: sum, breakdown, hashes, missing_shards: missing_indices, master_state_hash: guard.master_state_hash.clone() }))
         }
     } else {
-        (StatusCode::NOT_FOUND, Json(JobStatusResponse { status: "not_found".to_string(), total_sum: 0, breakdown: vec![], hashes: vec![], missing_shards: vec![] }))
+        (StatusCode::NOT_FOUND, Json(JobStatusResponse { status: "not_found".to_string(), total_sum: 0, breakdown: vec![], hashes: vec![], missing_shards: vec![], master_state_hash: None }))
     }
 }
 

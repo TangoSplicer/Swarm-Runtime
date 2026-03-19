@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, BTreeMap};
 use std::time::Instant;
 use dashmap::DashMap;
 use std::sync::Arc;
@@ -29,6 +29,8 @@ pub struct ShardResult {
     pub shard_index: u32,
     pub result: i32,
     pub result_hash: String,
+    pub state_delta: BTreeMap<String, String>,
+    pub execution_timestamp: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -56,8 +58,9 @@ pub struct SwarmStatus {
 pub struct JobState {
     pub expected_shards: usize,
     pub redundancy: usize,
-    pub raw_results: HashMap<u32, HashMap<libp2p::PeerId, (i32, String)>>,
-    pub verified_results: HashMap<u32, (i32, String)>,
+    pub raw_results: HashMap<u32, HashMap<libp2p::PeerId, (i32, String, BTreeMap<String, String>, u64)>>,
+    pub verified_results: HashMap<u32, (i32, String, BTreeMap<String, String>, u64)>,
+    pub master_state_hash: Option<String>,
     pub created_at: Instant,
     pub assignments: HashMap<u32, HashMap<libp2p::PeerId, Instant>>,
     pub shards_data: HashMap<u32, Shard>,
@@ -98,4 +101,5 @@ pub struct JobStatusResponse {
     pub breakdown: Vec<(u32, i32)>,
     pub hashes: Vec<(u32, String)>,
     pub missing_shards: Vec<u32>,
+    pub master_state_hash: Option<String>,
 }

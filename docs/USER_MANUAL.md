@@ -1,4 +1,4 @@
-# Swarm Runtime: Developer User Manual (v0.27.0)
+# Swarm Runtime: Developer User Manual (v0.28.0)
 
 ## 1. Starting the Mesh & Cryptographic Identity
 Every node dynamically generates a permanent cryptographic identity (`.swarm_identity`) on its first boot from `/dev/urandom`.

@@ -1,4 +1,4 @@
-# Swarm Runtime: Technical Specification v0.27.0
+# Swarm Runtime: Technical Specification v0.28.0
 
 ## 1. System Architecture
 * **Topology:** Physical Mesh (Libp2p), Logical Star (Public Cloud Gateway-Coordinator).

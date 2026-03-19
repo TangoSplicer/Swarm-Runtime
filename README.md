@@ -3,11 +3,11 @@
 
 [![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange)](https://www.rust-lang.org/)
 [![Termux](https://img.shields.io/badge/Platform-Android%20%2F%20Termux-green)](https://termux.dev/)
-[![Status](https://img.shields.io/badge/Release-v0.27.0%20(Enterprise%20Federated)-blue)](https://github.com/TangoSplicer/Swarm-Runtime)
+[![Status](https://img.shields.io/badge/Release-v0.28.0%20(Enterprise%20Federated)-blue)](https://github.com/TangoSplicer/Swarm-Runtime)
 
 Swarm Runtime turns Android devices into a fault-tolerant compute cluster. It uses **Libp2p** for mesh networking, **Axum** for a Headless REST API, and the **Wasmi** interpreter for secure, ARM64-safe sandboxed code execution.
 
-## 🔥 New in v0.27.0 (Enterprise Federation)
+## 🔥 New in v0.28.0 (Enterprise Federation)
 * **Active-Active Gateways:** Cloud Gateways replicate state seamlessly using Gossipsub. If your primary cloud instance crashes, the secondary instance takes over with zero data loss.
 * **HA Fallback Routing:** Android Workers and the Dev CLI seamlessly dial secondary gateways if the primary connection drops.
 * **Strict Cryptography:** Network bounds hardened with strict Gossipsub signature validation and SHA-256 deterministic sharding.
