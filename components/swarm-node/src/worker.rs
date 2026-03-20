@@ -2,14 +2,12 @@ use anyhow::Result;
 use dashmap::{DashMap, DashSet};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use futures::StreamExt;
-use libp2p::{kad, mdns, request_response, swarm::SwarmEvent};
+use libp2p::{request_response, swarm::SwarmEvent};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use sysinfo::System;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
-use tokio::sync::Mutex;
 
 use synapse::{SwarmRequest, SwarmResponse, SynapseBehaviorEvent, SynapseNode};
 // Assuming Judge is available in your workspace to handle the actual Wasm/Polyglot execution
@@ -68,7 +66,7 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey, seed: [u8; 3
                 match event {
                     SwarmEvent::Behaviour(SynapseBehaviorEvent::ReqRes(request_response::Event::Message { peer, message })) => {
                         if let request_response::Message::Request { request: SwarmRequest::DispatchShard(json_payload), channel, .. } = message {
-                            p2p_node.send_response(channel, SwarmResponse::Ack);
+                            let _ = p2p_node.swarm.behaviour_mut().req_res.send_response(channel, SwarmResponse::Ack);
 
                             let tx_clone = worker_tx_clone.clone();
 
@@ -78,7 +76,8 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey, seed: [u8; 3
 
                                     // 1. Cryptographic Verification
                                     let message_to_verify = format!("{}:{}", signed_payload.payload_json, signed_payload.expires_at);
-                                    if let Ok(signature) = Signature::from_bytes(signed_payload.signature.as_slice().try_into().unwrap_or([0; 64])) {
+                                    let signature = Signature::from_bytes(signed_payload.signature.as_slice().try_into().unwrap_or(&[0u8; 64]));
+                                        if true {
                                         if verifying_key.verify(message_to_verify.as_bytes(), &signature).is_ok() {
 
                                             // 2. Expiration Check
@@ -93,16 +92,20 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey, seed: [u8; 3
                                                 println!("⚙️ EXECUTING: Job {} | Shard {}/{}", shard_data.parent_task_id, shard_data.shard_index + 1, shard_data.total_shards);
 
                                                 // 4. Run the Sandbox/Judge
-                                                let mut judge = Judge::new(&shard_data.wasm_image, &shard_data.data);
-                                                let (execution_result_code, execution_result_hash) = judge.execute().await.unwrap_or((-1, "ERROR".to_string()));
-
-                                                // Determine contract ID for state path
-                                                let mut hasher = Sha256::new();
+                                                let mut hasher = sha2::Sha256::new();
                                                 hasher.update(&shard_data.wasm_image);
                                                 let contract_id = hex::encode(hasher.finalize());
+                                                let state_path = safe_state_path(&contract_id).unwrap_or_else(|| "./rootfs/data/default.state".to_string());
 
-                                                let state_path = safe_state_path(&contract_id)
-                                                    .unwrap_or_else(|| "./rootfs/data/default.state".to_string());
+                                                let mut judge = Judge::new(None).unwrap();
+                                                let (execution_result_code, execution_result_hash, _) = judge.execute(
+                                                    &shard_data.wasm_image,
+                                                    &shard_data.data,
+                                                    "POLYGLOT:WASM",
+                                                    &state_path
+                                                ).unwrap_or((-1, "ERROR".to_string(), None));
+
+
 
                                                 // 5. PHASE 14: State Parsing & Delta Extraction (Tokio Async Law Enforced)
                                                 let mut state_delta: BTreeMap<String, String> = BTreeMap::new();

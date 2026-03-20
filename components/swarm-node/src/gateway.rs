@@ -277,19 +277,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                                             }
                                         }
                                     },
-                                    SwarmEvent::Behaviour(SynapseBehaviorEvent::Mdns(mdns::Event::Discovered(list))) => {
-                                        for (peer_id, multiaddr) in list {
-                                            if !p2p_node.swarm.is_connected(&peer_id) {
-                                                if local_peer_id >= peer_id { continue; }
-                                                if let Some(last) = pending_c.get(&peer_id) {
-                                                    if last.elapsed() < Duration::from_secs(5) { continue; }
-                                                }
-                                                pending_c.insert(peer_id, Instant::now());
-                                                p2p_node.swarm.behaviour_mut().kademlia.add_address(&peer_id, multiaddr.clone());
-                                                let _ = p2p_node.swarm.dial(multiaddr);
-                                            }
-                                        }
-                                    },
+
                                     SwarmEvent::Behaviour(SynapseBehaviorEvent::ReqRes(request_response::Event::Message { peer, message })) => {
                                         if let request_response::Message::Response { request_id, response } = message {
                                             if let Some(hash) = req_to_hash.remove(&request_id) {
@@ -300,7 +288,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                                                 }
                                             }
                                         } else if let request_response::Message::Request { request: SwarmRequest::SubmitResult(json_payload), channel, .. } = message {
-                                            p2p_node.send_response(channel, SwarmResponse::Ack);
+                                            let _ = p2p_node.swarm.behaviour_mut().req_res.send_response(channel, SwarmResponse::Ack);
 
                                             let jobs_clone = jobs_c.clone();
                                             let health_clone = health_c.clone();
