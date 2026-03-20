@@ -1,11 +1,11 @@
 [workspace]
 members = [
     "components/swarm-cli",
-    "components/prism",
     "components/synapse",
     "components/judge",
     "components/lazarus",
-    "components/swarm-node"
-, "components/swarm-cli", "test_payloads/stateful-counter"]
-# Removed "examples/shard-worker" from this list!
+    "components/swarm-node",
+    "test_payloads/stateful-counter"
+]
+# Removed "examples/shard-worker" and "components/prism" from this list!
 resolver = "2"

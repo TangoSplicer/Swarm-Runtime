@@ -1,5 +1,6 @@
 use libp2p::{
-    gossipsub, mdns, noise, kad, identify, request_response, swarm::NetworkBehaviour, tcp, yamux, PeerId, Swarm, StreamProtocol
+    gossipsub, kad, identify, request_response, noise, tcp, yamux, 
+    swarm::NetworkBehaviour, PeerId, Swarm, StreamProtocol, Transport, core::upgrade::Version
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -24,7 +25,7 @@ pub enum SwarmResponse {
 #[derive(NetworkBehaviour)]
 pub struct SynapseBehavior {
     pub gossipsub: gossipsub::Behaviour,
-    pub mdns: mdns::tokio::Behaviour,
+    // mdns has been intentionally removed to save WAN bandwidth on Android Edge Workers
     pub kademlia: kad::Behaviour<kad::store::MemoryStore>,
     pub identify: identify::Behaviour,
     pub req_res: request_response::cbor::Behaviour<SwarmRequest, SwarmResponse>,
@@ -35,54 +36,63 @@ pub struct SynapseNode {
 }
 
 impl SynapseNode {
-    // PHASE 9.1: Persistent Network Identity Injection
-    pub async fn new(p2p_port: u16, mut seed: [u8; 32]) -> Result<Self> {
+    // PHASE 9.1 & 15: Persistent Network Identity & Hardened Security
+    pub async fn new(p2p_port: u16, seed: [u8; 32]) -> Result<Self> {
         // Convert our permanent 32-byte seed into a Libp2p Keypair
-        let secret = libp2p::identity::ed25519::SecretKey::try_from_bytes(&mut seed)
-            .map_err(|e| anyhow!("Invalid ed25519 seed: {:?}", e))?;
-        let ed25519_kp = libp2p::identity::ed25519::Keypair::from(secret);
-        let id_keys = libp2p::identity::Keypair::from(ed25519_kp);
-        
-        let peer_id = PeerId::from(id_keys.public());
-        println!("🆔 Local Peer ID: {}", peer_id);
+        let secret = libp2p::identity::ed25519::SecretKey::try_from_bytes(seed)?;
+        let key = libp2p::identity::Keypair::from(libp2p::identity::ed25519::Keypair::from(secret));
+        let peer_id = PeerId::from(key.public());
 
-        let mut swarm = libp2p::SwarmBuilder::with_existing_identity(id_keys)
-            .with_tokio()
-            .with_tcp(tcp::Config::default(), noise::Config::new, yamux::Config::default)?
-            .with_behaviour(|key| {
-                let gossipsub_config = gossipsub::ConfigBuilder::default()
-                    .heartbeat_interval(Duration::from_secs(1))
-                    .validation_mode(gossipsub::ValidationMode::Strict)
-                    .build()
-                    .map_err(|e| anyhow!("{:?}", e))?;
+        // 1. TCP Transport with Noise & Yamux
+        let transport = tcp::tokio::Transport::default()
+            .upgrade(Version::V1)
+            .authenticate(noise::Config::new(&key).unwrap())
+            .multiplex(yamux::Config::default())
+            .boxed();
 
-                let mut kad_config = kad::Config::default();
-                kad_config.set_protocol_names(vec![StreamProtocol::new("/swarm/kad/1.0.0")]);
-                let store = kad::store::MemoryStore::new(peer_id);
+        // 2. Hardened Gossipsub Config (Adaptive Backoff & Size Limits)
+        let gossipsub_config = gossipsub::ConfigBuilder::default()
+            .heartbeat_interval(Duration::from_secs(3)) // Relaxed from 1s to save battery
+            .validation_mode(gossipsub::ValidationMode::Strict)
+            .max_transmit_size(1024 * 1024) // 1MB Hard Limit to prevent network flooding
+            .build()?;
+            
+        let gossipsub = gossipsub::Behaviour::new(
+            gossipsub::MessageAuthenticity::Signed(key.clone()),
+            gossipsub_config,
+        )?;
 
-                let mdns_config = mdns::Config::default();
+        // 3. Kademlia DHT
+        let store = kad::store::MemoryStore::new(peer_id);
+        let kad_config = kad::Config::default();
+        let kademlia = kad::Behaviour::with_config(peer_id, store, kad_config);
 
-                let identify_config = identify::Config::new(
-                    "swarm/1.0.0".to_string(),
-                    key.public(),
-                );
+        // 4. Identify Protocol
+        let identify_config = identify::Config::new("/swarm/1.0.0".to_string(), key.public());
+        let identify = identify::Behaviour::new(identify_config);
 
-                let req_res_protocol = StreamProtocol::new("/swarm/req-res/1.0.0");
-                let req_res_config = request_response::Config::default().with_request_timeout(std::time::Duration::from_secs(15));
-                let req_res = request_response::cbor::Behaviour::<SwarmRequest, SwarmResponse>::new(
-                    [(req_res_protocol, request_response::ProtocolSupport::Full)],
-                    req_res_config,
-                );
+        // 5. Hardened Request-Response (OOM Protection via Explicit Bounds)
+        let req_res_protocol = StreamProtocol::new("/swarm/req-res/1.0.0");
+        let req_res_config = request_response::Config::default()
+            .with_max_request_size(2 * 1024 * 1024)  // 2MB Bound
+            .with_max_response_size(5 * 1024 * 1024) // 5MB Bound
+            .with_request_timeout(Duration::from_secs(10));
+            
+        let req_res = request_response::cbor::Behaviour::<SwarmRequest, SwarmResponse>::new(
+            [(req_res_protocol, request_response::ProtocolSupport::Full)],
+            req_res_config,
+        );
 
-                Ok(SynapseBehavior {
-                    gossipsub: gossipsub::Behaviour::new(gossipsub::MessageAuthenticity::Signed(key.clone()), gossipsub_config)?,
-                    mdns: mdns::tokio::Behaviour::new(mdns_config, peer_id)?,
-                    kademlia: kad::Behaviour::with_config(peer_id, store, kad_config),
-                    identify: identify::Behaviour::new(identify_config),
-                    req_res,
-                })
-            })?
-            .build();
+        // Assemble the behavior
+        let behaviour = SynapseBehavior {
+            gossipsub,
+            kademlia,
+            identify,
+            req_res,
+        };
+
+        // Build the Swarm using Tokio
+        let mut swarm = libp2p::SwarmBuilder::with_tokio_executor(transport, behaviour, peer_id).build();
 
         let listen_addr = format!("/ip4/0.0.0.0/tcp/{}", p2p_port);
         swarm.listen_on(listen_addr.parse()?)?;
@@ -105,9 +115,5 @@ impl SynapseNode {
 
     pub fn send_request(&mut self, peer: &PeerId, req: SwarmRequest) -> request_response::OutboundRequestId {
         self.swarm.behaviour_mut().req_res.send_request(peer, req)
-    }
-
-    pub fn send_response(&mut self, ch: request_response::ResponseChannel<SwarmResponse>, res: SwarmResponse) {
-        let _ = self.swarm.behaviour_mut().req_res.send_response(ch, res);
     }
 }

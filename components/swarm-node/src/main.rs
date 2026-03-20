@@ -7,11 +7,14 @@ use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use ed25519_dalek::SigningKey;
-use rand::rngs::OsRng; // PHASE 13: Added for cross-platform CSPRNG
+use rand::rngs::OsRng;
+use tokio::sync::mpsc;
+use tokio::signal;
+use lazarus::CriticalFailure; // PHASE 15: Imported Lazarus Fault Tolerance
 
 #[derive(Parser)]
 #[command(name = "swarm-node")]
-#[command(version = env!("CARGO_PKG_VERSION"))] // PHASE 13: Dynamic CLI Versioning
+#[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(about = "Swarm Runtime - Unified Node & CLI", long_about = None)]
 struct Cli {
     #[command(subcommand)]
@@ -70,12 +73,11 @@ struct JobStatusResponse {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // PHASE 13: Dynamic Versioning Banner
     if cli.is_node_command() {
         println!("🐝 Swarm Runtime v{} - Initializing...", env!("CARGO_PKG_VERSION"));
     }
     
-    // 1. Unified Cryptographic Identity Loading
+    // Unified Cryptographic Identity Loading
     let id_path = ".swarm_identity";
     let signing_key = if let Ok(bytes) = fs::read(id_path) {
         let mut key_bytes = [0u8; 32];
@@ -89,8 +91,6 @@ async fn main() -> Result<()> {
         if cli.is_node_command() {
             println!("🌱 Generating new cryptographic identity...");
         }
-        
-        // PHASE 13: Cross-Platform Cryptography (WORA)
         let mut csprng = OsRng;
         let key = SigningKey::generate(&mut csprng);
         fs::write(id_path, key.to_bytes()).context("Failed to write identity")?;
@@ -100,13 +100,75 @@ async fn main() -> Result<()> {
     let verifying_key = signing_key.verifying_key();
     let seed = signing_key.to_bytes();
 
-    // 2. Command Router
     match &cli.command {
         Commands::Start { shard } => {
-            worker::run_worker(*shard, verifying_key, seed).await?;
+            // PHASE 15: Lazarus Monitoring for the Edge Worker
+            let (alert_tx, mut alert_rx) = mpsc::channel::<CriticalFailure>(32);
+            let alert_tx_clone = alert_tx.clone();
+            
+            let worker_shard = *shard;
+            let worker_key = verifying_key.clone();
+            let worker_seed = seed;
+
+            tokio::spawn(async move {
+                if let Err(e) = worker::run_worker(worker_shard, worker_key, worker_seed).await {
+                    let _ = alert_tx_clone.send(CriticalFailure {
+                        service_name: format!("EdgeWorker-Shard-{}", worker_shard),
+                        error_message: e.to_string(),
+                    }).await;
+                }
+            });
+
+            println!("🛡️ Lazarus Fault Tolerance Engine monitoring Worker...");
+            loop {
+                tokio::select! {
+                    Some(failure) = alert_rx.recv() => {
+                        eprintln!("\n🔥 FATAL: Swarm Runtime caught a critical failure!");
+                        eprintln!("Service: {}", failure.service_name);
+                        eprintln!("Error: {}", failure.error_message);
+                        eprintln!("Initiating graceful global shutdown...");
+                        break;
+                    }
+                    _ = signal::ctrl_c() => {
+                        println!("\n🛑 Received termination signal. Shutting down Worker...");
+                        break;
+                    }
+                }
+            }
         },
         Commands::Gateway { port } => {
-            gateway::run_gateway(*port, signing_key).await?;
+            // PHASE 15: Lazarus Monitoring for the Orchestration Gateway
+            let (alert_tx, mut alert_rx) = mpsc::channel::<CriticalFailure>(32);
+            let alert_tx_clone = alert_tx.clone();
+            
+            let gw_port = *port;
+            let gw_key = signing_key.clone();
+
+            tokio::spawn(async move {
+                if let Err(e) = gateway::run_gateway(gw_port, gw_key).await {
+                    let _ = alert_tx_clone.send(CriticalFailure {
+                        service_name: "OrchestrationGateway".to_string(),
+                        error_message: e.to_string(),
+                    }).await;
+                }
+            });
+
+            println!("🛡️ Lazarus Fault Tolerance Engine monitoring Gateway on port {}...", port);
+            loop {
+                tokio::select! {
+                    Some(failure) = alert_rx.recv() => {
+                        eprintln!("\n🔥 FATAL: Swarm Runtime caught a critical failure!");
+                        eprintln!("Service: {}", failure.service_name);
+                        eprintln!("Error: {}", failure.error_message);
+                        eprintln!("Initiating graceful global shutdown...");
+                        break;
+                    }
+                    _ = signal::ctrl_c() => {
+                        println!("\n🛑 Received termination signal. Shutting down Gateway...");
+                        break;
+                    }
+                }
+            }
         },
         Commands::Deploy { file, lang, gateways } => {
             let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().unwrap();
@@ -135,13 +197,10 @@ async fn main() -> Result<()> {
 
             let metadata = DeployMetadata { dataset };
             let metadata_json = serde_json::to_string(&metadata)?;
-
             let gw_list: Vec<&str> = gateways.split(',').map(|s| s.trim()).collect();
             let mut success = false;
 
-            // HA Routing Loop: Try gateways until one succeeds
             for gw in gw_list {
-                // PHASE 13: Strict MIME Type enforcement to pass Gateway Gateway validation
                 let wasm_part = reqwest::multipart::Part::bytes(wasm_bytes.clone())
                     .file_name(file.clone())
                     .mime_str("application/wasm")?; 

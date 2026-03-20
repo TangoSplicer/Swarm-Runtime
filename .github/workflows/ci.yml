@@ -1,0 +1,59 @@
+name: Phase 15 Enterprise CI/CD
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt-and-clippy:
+    name: Formatting & Linting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Enforce Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Strict Clippy Audit
+        run: cargo clippy --workspace -- -D warnings
+
+  test-and-build:
+    name: Matrix Test & Build
+    needs: fmt-and-clippy
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: 
+          - x86_64-unknown-linux-gnu # Linux Cloud Gateways
+          - aarch64-linux-android    # Termux Mobile Edge Workers
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build Workspace
+        run: cross build --workspace --target ${{ matrix.target }} --release
+
+      - name: Run Integration Tests
+        # We only run tests natively on x86_64 to avoid Android QEMU overhead in CI,
+        # but the code is cross-compiled to guarantee it builds for Termux.
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cross test --workspace --target ${{ matrix.target }}
