@@ -94,8 +94,8 @@ async fn main() -> Result<()> {
                     }
 
                     let wasm_bytes = std::fs::read(&temp_wasm).context("Failed to read compiled wasm")?;
-                    let _ = std::fs::remove_file(&temp_wasm); // Cleanup binary
-                    let _ = std::fs::remove_file(format!("{}.o", temp_wasm)).unwrap_or_default(); // Cleanup object file
+                    std::fs::remove_file(&temp_wasm); // Cleanup binary
+                    std::fs::remove_file(format!("{}.o", temp_wasm)).unwrap_or_default(); // Cleanup object file
 
                     use base64::{Engine as _, engine::general_purpose};
                     let encoded = general_purpose::STANDARD.encode(&wasm_bytes);
