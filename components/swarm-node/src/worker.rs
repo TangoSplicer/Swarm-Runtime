@@ -3,7 +3,7 @@ use dashmap::{DashMap, DashSet};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use futures::StreamExt;
 use libp2p::{request_response, swarm::SwarmEvent};
-use sha2::{Digest, Sha256};
+use sha2::{Digest};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -30,7 +30,6 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey, seed: [u8; 3
     p2p_node.subscribe("swarm-control-plane")?;
 
     let connected_peers = Arc::new(DashSet::new());
-    let pending_c = Arc::new(DashMap::new());
 
     let (worker_tx, mut worker_rx) = tokio::sync::mpsc::channel::<NodeCommand>(1000);
     let worker_tx_clone = worker_tx.clone();
@@ -164,7 +163,6 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey, seed: [u8; 3
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                         println!("📡 CONNECTED: {}", peer_id);
                         connected_peers.insert(peer_id);
-                        pending_c.remove(&peer_id);
                     },
                     SwarmEvent::ConnectionClosed { peer_id, .. } => {
                         println!("📉 DISCONNECTED: {}", peer_id);

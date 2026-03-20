@@ -10,7 +10,7 @@ use axum::{
 use dashmap::DashMap;
 use ed25519_dalek::{Signer, SigningKey};
 use futures::StreamExt;
-use libp2p::{gossipsub, mdns, request_response, swarm::SwarmEvent};
+use libp2p::{gossipsub, request_response, swarm::SwarmEvent};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
     let mut p2p_node = SynapseNode::new(4000, signing_key.to_bytes()).await?;
-    let local_peer_id = *p2p_node.swarm.local_peer_id();
+    let _local_peer_id = *p2p_node.swarm.local_peer_id();
     p2p_node.subscribe("swarm-control-plane")?;
     p2p_node.subscribe("swarm-gateway-sync")?;
     let (tx, mut rx) = tokio::sync::mpsc::channel::<NodeCommand>(1000);
