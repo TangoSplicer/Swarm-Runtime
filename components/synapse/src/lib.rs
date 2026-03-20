@@ -1,10 +1,10 @@
+use anyhow::{anyhow, Result};
 use libp2p::{
-    gossipsub, kad, identify, request_response, noise, tcp, yamux, 
-    swarm::NetworkBehaviour, PeerId, Swarm, StreamProtocol, Transport, core::upgrade::Version
+    core::upgrade::Version, gossipsub, identify, kad, noise, request_response,
+    swarm::NetworkBehaviour, tcp, yamux, PeerId, StreamProtocol, Swarm, Transport,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use anyhow::{Result, anyhow};
 
 /// The Unicast Request Payload
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,7 +56,7 @@ impl SynapseNode {
             .validation_mode(gossipsub::ValidationMode::Strict)
             .max_transmit_size(1024 * 1024) // 1MB Hard Limit to prevent network flooding
             .build()?;
-            
+
         let gossipsub = gossipsub::Behaviour::new(
             gossipsub::MessageAuthenticity::Signed(key.clone()),
             gossipsub_config,
@@ -74,10 +74,10 @@ impl SynapseNode {
         // 5. Hardened Request-Response (OOM Protection via Explicit Bounds)
         let req_res_protocol = StreamProtocol::new("/swarm/req-res/1.0.0");
         let req_res_config = request_response::Config::default()
-            .with_max_request_size(2 * 1024 * 1024)  // 2MB Bound
+            .with_max_request_size(2 * 1024 * 1024) // 2MB Bound
             .with_max_response_size(5 * 1024 * 1024) // 5MB Bound
             .with_request_timeout(Duration::from_secs(10));
-            
+
         let req_res = request_response::cbor::Behaviour::<SwarmRequest, SwarmResponse>::new(
             [(req_res_protocol, request_response::ProtocolSupport::Full)],
             req_res_config,
@@ -92,7 +92,8 @@ impl SynapseNode {
         };
 
         // Build the Swarm using Tokio
-        let mut swarm = libp2p::SwarmBuilder::with_tokio_executor(transport, behaviour, peer_id).build();
+        let mut swarm =
+            libp2p::SwarmBuilder::with_tokio_executor(transport, behaviour, peer_id).build();
 
         let listen_addr = format!("/ip4/0.0.0.0/tcp/{}", p2p_port);
         swarm.listen_on(listen_addr.parse()?)?;
@@ -103,17 +104,29 @@ impl SynapseNode {
 
     pub fn subscribe(&mut self, topic: &str) -> Result<()> {
         let topic = gossipsub::IdentTopic::new(topic);
-        self.swarm.behaviour_mut().gossipsub.subscribe(&topic).map_err(|e| anyhow!("{:?}", e))?;
+        self.swarm
+            .behaviour_mut()
+            .gossipsub
+            .subscribe(&topic)
+            .map_err(|e| anyhow!("{:?}", e))?;
         Ok(())
     }
 
     pub fn publish_to_topic(&mut self, topic: &str, message: String) -> Result<()> {
         let topic = gossipsub::IdentTopic::new(topic);
-        self.swarm.behaviour_mut().gossipsub.publish(topic, message.into_bytes()).map_err(|e| anyhow!("{:?}", e))?;
+        self.swarm
+            .behaviour_mut()
+            .gossipsub
+            .publish(topic, message.into_bytes())
+            .map_err(|e| anyhow!("{:?}", e))?;
         Ok(())
     }
 
-    pub fn send_request(&mut self, peer: &PeerId, req: SwarmRequest) -> request_response::OutboundRequestId {
+    pub fn send_request(
+        &mut self,
+        peer: &PeerId,
+        req: SwarmRequest,
+    ) -> request_response::OutboundRequestId {
         self.swarm.behaviour_mut().req_res.send_request(peer, req)
     }
 }
