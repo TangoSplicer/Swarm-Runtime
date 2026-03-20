@@ -1,9 +1,9 @@
 use anyhow::Result;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashSet;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use futures::StreamExt;
 use libp2p::{request_response, swarm::SwarmEvent};
-use sha2::{Digest};
+use sha2::Digest;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -39,28 +39,18 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey, seed: [u8; 3
         shard_id, local_peer_id
     );
 
-    // Spawn the background event processing loop
-    tokio::spawn(async move {
-        loop {
-            if let Some(cmd) = worker_rx.recv().await {
-                match cmd {
-                    NodeCommand::Unicast(peer, req) => {
-                        let _ = p2p_node.send_request(&peer, req);
-                    }
-                    NodeCommand::Broadcast(msg) => {
-                        let _ = p2p_node.publish_to_topic("swarm-control-plane", msg);
-                    }
-                    NodeCommand::Disconnect(peer) => {
-                        let _ = p2p_node.swarm.disconnect_peer_id(peer);
-                    }
-                    _ => {} // Handle other commands as needed
-                }
-            }
-        }
-    });
-
     loop {
         tokio::select! {
+            cmd = worker_rx.recv() => {
+                if let Some(cmd) = cmd {
+                    match cmd {
+                        NodeCommand::Unicast(peer, req) => { let _ = p2p_node.send_request(&peer, req); },
+                        NodeCommand::Broadcast(msg) => { let _ = p2p_node.publish_to_topic("swarm-control-plane", msg); },
+                        NodeCommand::Disconnect(peer) => { let _ = p2p_node.swarm.disconnect_peer_id(peer); },
+                        _ => {}
+                    }
+                }
+            },
             event = p2p_node.swarm.select_next_some() => {
                 match event {
                     SwarmEvent::Behaviour(SynapseBehaviorEvent::ReqRes(request_response::Event::Message { peer, message })) => {
