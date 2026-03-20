@@ -2,7 +2,8 @@ use anyhow::Result;
 use libp2p::{
     core::transport::memory::MemoryTransport,
     core::upgrade::Version,
-    identity, noise, request_response, swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent},
+    identity, noise, request_response,
+    swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent},
     yamux, PeerId, Swarm, Transport,
 };
 use rand::Rng;
@@ -16,7 +17,10 @@ use synapse::{SwarmRequest, SwarmResponse};
 /// by randomly dropping the connection attempt or adding latency.
 pub async fn build_chaos_swarm(
     drop_probability: f64,
-) -> Result<(PeerId, Swarm<request_response::cbor::Behaviour<SwarmRequest, SwarmResponse>>)> {
+) -> Result<(
+    PeerId,
+    Swarm<request_response::cbor::Behaviour<SwarmRequest, SwarmResponse>>,
+)> {
     let id_keys = identity::Keypair::generate_ed25519();
     let peer_id = PeerId::from(id_keys.public());
 
@@ -39,9 +43,9 @@ pub async fn build_chaos_swarm(
 
     // 3. Configure Request-Response (BFT Payload Simulation)
     let req_res_protocol = libp2p::StreamProtocol::new("/swarm/req-res/test");
-    let req_res_config = request_response::Config::default()
-        .with_request_timeout(Duration::from_secs(5));
-    
+    let req_res_config =
+        request_response::Config::default().with_request_timeout(Duration::from_secs(5));
+
     let behaviour = request_response::cbor::Behaviour::<SwarmRequest, SwarmResponse>::new(
         [(req_res_protocol, request_response::ProtocolSupport::Full)],
         req_res_config,
@@ -72,12 +76,15 @@ async fn test_cellular_packet_loss_bft_sync() -> Result<()> {
             if let Some(event) = gateway_swarm.next().await {
                 if let SwarmEvent::Behaviour(request_response::Event::Message {
                     peer: _,
-                    message: request_response::Message::Request { request, channel, .. },
+                    message:
+                        request_response::Message::Request {
+                            request, channel, ..
+                        },
                 }) = event
                 {
                     // Assert we got the expected BFT payload
                     assert_eq!(request, SwarmRequest::FetchData("BFT_SYNC".to_string()));
-                    
+
                     // Send an Ack back
                     let _ = gateway_swarm
                         .behaviour_mut()
@@ -88,9 +95,10 @@ async fn test_cellular_packet_loss_bft_sync() -> Result<()> {
     });
 
     // Simulate sending a Request from Worker to Gateway
-    let request_id = worker_swarm
-        .behaviour_mut()
-        .send_request(&gateway_peer, SwarmRequest::FetchData("BFT_SYNC".to_string()));
+    let request_id = worker_swarm.behaviour_mut().send_request(
+        &gateway_peer,
+        SwarmRequest::FetchData("BFT_SYNC".to_string()),
+    );
 
     // Await the response from the Gateway over the memory transport
     tokio::select! {
