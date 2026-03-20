@@ -1,12 +1,12 @@
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
-use std::collections::{HashMap, HashSet, BTreeMap};
-use std::time::Instant;
 use dashmap::DashMap;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use ed25519_dalek::SigningKey;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
+use std::time::Instant;
 use synapse::SwarmRequest;
+use tokio::sync::Mutex;
+use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ShardedDeployRequest {
@@ -52,13 +52,15 @@ pub struct SwarmStatus {
     pub version: String,
     pub role: String,
     pub peers_count: usize,
-    #[serde(skip)] pub peers: HashSet<libp2p::PeerId>,
+    #[serde(skip)]
+    pub peers: HashSet<libp2p::PeerId>,
 }
 
 pub struct JobState {
     pub expected_shards: usize,
     pub redundancy: usize,
-    pub raw_results: HashMap<u32, HashMap<libp2p::PeerId, (i32, String, BTreeMap<String, String>, u64)>>,
+    pub raw_results:
+        HashMap<u32, HashMap<libp2p::PeerId, (i32, String, BTreeMap<String, String>, u64)>>,
     pub verified_results: HashMap<u32, (i32, String, BTreeMap<String, String>, u64)>,
     pub master_state_hash: Option<String>,
     pub created_at: Instant,

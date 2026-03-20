@@ -1,16 +1,16 @@
 mod gateway;
-mod worker;
 mod types;
+mod worker;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use ed25519_dalek::SigningKey;
+use lazarus::CriticalFailure;
+use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use ed25519_dalek::SigningKey;
-use rand::rngs::OsRng;
-use tokio::sync::mpsc;
 use tokio::signal;
-use lazarus::CriticalFailure; // PHASE 15: Imported Lazarus Fault Tolerance
+use tokio::sync::mpsc; // PHASE 15: Imported Lazarus Fault Tolerance
 
 #[derive(Parser)]
 #[command(name = "swarm-node")]
@@ -52,7 +52,7 @@ enum Commands {
         job_id: String,
         #[arg(long, default_value = "http://127.0.0.1:3000")]
         gateways: String,
-    }
+    },
 }
 
 #[derive(Serialize)]
@@ -74,9 +74,12 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     if cli.is_node_command() {
-        println!("🐝 Swarm Runtime v{} - Initializing...", env!("CARGO_PKG_VERSION"));
+        println!(
+            "🐝 Swarm Runtime v{} - Initializing...",
+            env!("CARGO_PKG_VERSION")
+        );
     }
-    
+
     // Unified Cryptographic Identity Loading
     let id_path = ".swarm_identity";
     let signing_key = if let Ok(bytes) = fs::read(id_path) {
@@ -105,17 +108,19 @@ async fn main() -> Result<()> {
             // PHASE 15: Lazarus Monitoring for the Edge Worker
             let (alert_tx, mut alert_rx) = mpsc::channel::<CriticalFailure>(32);
             let alert_tx_clone = alert_tx.clone();
-            
+
             let worker_shard = *shard;
             let worker_key = verifying_key.clone();
             let worker_seed = seed;
 
             tokio::spawn(async move {
                 if let Err(e) = worker::run_worker(worker_shard, worker_key, worker_seed).await {
-                    let _ = alert_tx_clone.send(CriticalFailure {
-                        service_name: format!("EdgeWorker-Shard-{}", worker_shard),
-                        error_message: e.to_string(),
-                    }).await;
+                    let _ = alert_tx_clone
+                        .send(CriticalFailure {
+                            service_name: format!("EdgeWorker-Shard-{}", worker_shard),
+                            error_message: e.to_string(),
+                        })
+                        .await;
                 }
             });
 
@@ -135,25 +140,30 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-        },
+        }
         Commands::Gateway { port } => {
             // PHASE 15: Lazarus Monitoring for the Orchestration Gateway
             let (alert_tx, mut alert_rx) = mpsc::channel::<CriticalFailure>(32);
             let alert_tx_clone = alert_tx.clone();
-            
+
             let gw_port = *port;
             let gw_key = signing_key.clone();
 
             tokio::spawn(async move {
                 if let Err(e) = gateway::run_gateway(gw_port, gw_key).await {
-                    let _ = alert_tx_clone.send(CriticalFailure {
-                        service_name: "OrchestrationGateway".to_string(),
-                        error_message: e.to_string(),
-                    }).await;
+                    let _ = alert_tx_clone
+                        .send(CriticalFailure {
+                            service_name: "OrchestrationGateway".to_string(),
+                            error_message: e.to_string(),
+                        })
+                        .await;
                 }
             });
 
-            println!("🛡️ Lazarus Fault Tolerance Engine monitoring Gateway on port {}...", port);
+            println!(
+                "🛡️ Lazarus Fault Tolerance Engine monitoring Gateway on port {}...",
+                port
+            );
             loop {
                 tokio::select! {
                     Some(failure) = alert_rx.recv() => {
@@ -169,18 +179,27 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-        },
-        Commands::Deploy { file, lang, gateways } => {
-            let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().unwrap();
+        }
+        Commands::Deploy {
+            file,
+            lang,
+            gateways,
+        } => {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .unwrap();
             println!("🚀 Preparing deployment for: {}", file);
 
             let (wasm_bytes, dataset) = match lang.to_lowercase().as_str() {
                 "wasm" => {
                     let wasm_bytes = fs::read(file).context("Failed to read .wasm file")?;
                     (wasm_bytes, vec!["EXECUTE_NATIVE_WASM".to_string()])
-                },
-                "python" | "js" | "javascript" | "lua" | "ruby" | "rb" | "php" | "sqlite" | "sql" => {
-                    let code = fs::read_to_string(file).with_context(|| format!("Failed to read file: {}", file))?;
+                }
+                "python" | "js" | "javascript" | "lua" | "ruby" | "rb" | "php" | "sqlite"
+                | "sql" => {
+                    let code = fs::read_to_string(file)
+                        .with_context(|| format!("Failed to read file: {}", file))?;
                     let identifier = match lang.to_lowercase().as_str() {
                         "python" => "POLYGLOT:PYTHON",
                         "js" | "javascript" => "POLYGLOT:JS",
@@ -191,8 +210,11 @@ async fn main() -> Result<()> {
                         _ => unreachable!(),
                     };
                     (identifier.as_bytes().to_vec(), vec![code])
-                },
-                _ => anyhow::bail!("Unsupported language: {}. Supported: python, js, lua, ruby, php, sqlite, wasm", lang),
+                }
+                _ => anyhow::bail!(
+                    "Unsupported language: {}. Supported: python, js, lua, ruby, php, sqlite, wasm",
+                    lang
+                ),
             };
 
             let metadata = DeployMetadata { dataset };
@@ -203,37 +225,51 @@ async fn main() -> Result<()> {
             for gw in gw_list {
                 let wasm_part = reqwest::multipart::Part::bytes(wasm_bytes.clone())
                     .file_name(file.clone())
-                    .mime_str("application/wasm")?; 
-                    
+                    .mime_str("application/wasm")?;
+
                 let metadata_part = reqwest::multipart::Part::text(metadata_json.clone())
                     .mime_str("application/json")?;
 
-                let form = reqwest::multipart::Form::new().part("wasm", wasm_part).part("metadata", metadata_part);
+                let form = reqwest::multipart::Form::new()
+                    .part("wasm", wasm_part)
+                    .part("metadata", metadata_part);
                 let url = format!("{}/api/v1/jobs", gw.trim_end_matches('/'));
-                
+
                 println!("📡 Dispatching payload to Gateway at {}...", url);
-                
+
                 if let Ok(res) = client.post(&url).multipart(form).send().await {
                     if res.status().is_success() {
-                        println!("✅ Deployment Successful via {}!\n   Gateway Response: {}", gw, res.text().await.unwrap_or_default());
+                        println!(
+                            "✅ Deployment Successful via {}!\n   Gateway Response: {}",
+                            gw,
+                            res.text().await.unwrap_or_default()
+                        );
                         success = true;
                         break;
                     } else {
-                        println!("⚠️ Failed on {} (Status: {})\n   Error: {}", gw, res.status(), res.text().await.unwrap_or_default());
+                        println!(
+                            "⚠️ Failed on {} (Status: {})\n   Error: {}",
+                            gw,
+                            res.status(),
+                            res.text().await.unwrap_or_default()
+                        );
                     }
                 } else {
                     println!("⚠️ Failed to connect to {}", gw);
                 }
             }
-            
+
             if !success {
                 println!("❌ Deployment Failed across all federated Gateways.");
             }
-        },
+        }
         Commands::Status { job_id, gateways } => {
-            let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().unwrap();
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .unwrap();
             let gw_list: Vec<&str> = gateways.split(',').map(|s| s.trim()).collect();
-            
+
             for gw in gw_list {
                 let url = format!("{}/api/v1/jobs/{}", gw.trim_end_matches('/'), job_id);
                 if let Ok(res) = client.get(&url).send().await {
@@ -242,7 +278,14 @@ async fn main() -> Result<()> {
                         println!("\n=== 📊 Swarm Job Status ===");
                         println!("Status:          {}", status_data.status.to_uppercase());
                         if status_data.status == "completed" {
-                            println!("Consensus Hash:  {}", status_data.hashes.first().map(|(_, h)| h.as_str()).unwrap_or("NONE"));
+                            println!(
+                                "Consensus Hash:  {}",
+                                status_data
+                                    .hashes
+                                    .first()
+                                    .map(|(_, h)| h.as_str())
+                                    .unwrap_or("NONE")
+                            );
                             println!("Numeric Result:  {}", status_data.total_sum);
                         } else {
                             println!("Missing Shards:  {:?}", status_data.missing_shards);
@@ -253,11 +296,14 @@ async fn main() -> Result<()> {
                 }
             }
             println!("❌ Failed to retrieve status from any federated Gateway.");
-        },
+        }
         Commands::Fetch { hash, gateways } => {
-            let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().unwrap();
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .unwrap();
             let gw_list: Vec<&str> = gateways.split(',').map(|s| s.trim()).collect();
-            
+
             for gw in gw_list {
                 let url = format!("{}/api/v1/data/{}", gw.trim_end_matches('/'), hash);
                 if let Ok(response) = client.get(&url).send().await {
@@ -277,6 +323,9 @@ async fn main() -> Result<()> {
 
 impl Cli {
     fn is_node_command(&self) -> bool {
-        matches!(self.command, Commands::Start { .. } | Commands::Gateway { .. })
+        matches!(
+            self.command,
+            Commands::Start { .. } | Commands::Gateway { .. }
+        )
     }
 }
