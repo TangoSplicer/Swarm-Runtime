@@ -43,7 +43,7 @@ enum Commands {
         /// The Gateway URL
         #[arg(long, default_value = "http://127.0.0.1:3000")]
         gateway: String,
-    }
+    },
 }
 
 #[derive(Serialize)]
@@ -67,19 +67,23 @@ async fn main() -> Result<()> {
     let client = reqwest::Client::new();
 
     match &cli.command {
-        Commands::Deploy { file, lang, gateway } => {
+        Commands::Deploy {
+            file,
+            lang,
+            gateway,
+        } => {
             println!("🚀 Preparing deployment for: {}", file);
 
             let (wasm_base64, dataset) = match lang.to_lowercase().as_str() {
                                                 "zig" => {
                     println!("⚙️  Locally compiling Zig source natively to WASIp1...");
                     let temp_wasm = format!("{}.wasm", file.replace(".zig", "").replace("/", "_"));
-                    
+
                     let status = std::process::Command::new("zig")
                         .args([
-                            "build-exe", file, 
-                            "-target", "wasm32-wasi", 
-                            "-O", "ReleaseSmall", 
+                            "build-exe", file,
+                            "-target", "wasm32-wasi",
+                            "-O", "ReleaseSmall",
                             &format!("-femit-bin={}", temp_wasm)
                         ])
                         .status()
@@ -92,7 +96,7 @@ async fn main() -> Result<()> {
                     let wasm_bytes = std::fs::read(&temp_wasm).context("Failed to read compiled wasm")?;
                     let _ = std::fs::remove_file(&temp_wasm); // Cleanup binary
                     let _ = std::fs::remove_file(format!("{}.o", temp_wasm)).unwrap_or_default(); // Cleanup object file
-                    
+
                     use base64::{Engine as _, engine::general_purpose};
                     let encoded = general_purpose::STANDARD.encode(&wasm_bytes);
                     (encoded, vec!["EXECUTE_NATIVE_WASM".to_string()])
@@ -128,7 +132,7 @@ async fn main() -> Result<()> {
                 "python" | "js" | "javascript" | "lua" | "ruby" | "rb" | "php" | "sqlite" | "sql" => {
                     let code = fs::read_to_string(file)
                         .with_context(|| format!("Failed to read file: {}", file))?;
-                        
+
                     let identifier = match lang.to_lowercase().as_str() {
                         "python" => "POLYGLOT:PYTHON",
                         "js" | "javascript" => "POLYGLOT:JS",
@@ -151,7 +155,8 @@ async fn main() -> Result<()> {
             let url = format!("{}/api/v1/jobs", gateway.trim_end_matches('/'));
             println!("📡 Dispatching payload to Gateway at {}...", url);
 
-            let res = client.post(&url)
+            let res = client
+                .post(&url)
                 .json(&payload)
                 .send()
                 .await
@@ -169,9 +174,12 @@ async fn main() -> Result<()> {
         }
         Commands::Fetch { hash, gateway } => {
             println!("🔍 Querying Gateway for File Hash: {}...", hash);
-            
-            
-            match client.get(format!("{}/api/v1/data/{}", gateway, hash)).send().await {
+
+            match client
+                .get(format!("{}/api/v1/data/{}", gateway, hash))
+                .send()
+                .await
+            {
                 Ok(response) => {
                     if response.status().is_success() {
                         if let Ok(bytes) = response.bytes().await {
@@ -185,27 +193,35 @@ async fn main() -> Result<()> {
                     } else {
                         println!("❌ Failed to retrieve file. It may not exist on the network.");
                     }
-                },
+                }
                 Err(e) => println!("❌ Failed to connect to Gateway: {}", e),
             }
-        },
+        }
         Commands::Status { job_id, gateway } => {
             let url = format!("{}/api/v1/jobs/{}", gateway.trim_end_matches('/'), job_id);
             println!("🔍 Querying Gateway for Job ID: {}...", job_id);
 
-            let res = client.get(&url)
+            let res = client
+                .get(&url)
                 .send()
                 .await
                 .context("Failed to connect to the Swarm Gateway.")?;
 
             if res.status().is_success() {
                 let status_data: JobStatusResponse = res.json().await?;
-                
+
                 println!("\\n=== 📊 Swarm Job Status ===");
                 println!("Status:          {}", status_data.status.to_uppercase());
-                
+
                 if status_data.status == "completed" {
-                    println!("Consensus Hash:  {}", status_data.hashes.first().map(|(_, h)| h.as_str()).unwrap_or("NONE"));
+                    println!(
+                        "Consensus Hash:  {}",
+                        status_data
+                            .hashes
+                            .first()
+                            .map(|(_, h)| h.as_str())
+                            .unwrap_or("NONE")
+                    );
                     println!("Numeric Result:  {}", status_data.total_sum);
                     println!("Shard Breakdown: {:?}", status_data.breakdown);
                     println!("Verified Shards: {}", status_data.hashes.len());
@@ -213,7 +229,6 @@ async fn main() -> Result<()> {
                     println!("Missing Shards:  {:?}", status_data.missing_shards);
                 }
                 println!("===========================\\n");
-
             } else {
                 println!("❌ Failed to retrieve status (HTTP {})", res.status());
             }
