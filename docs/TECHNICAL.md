@@ -32,3 +32,12 @@ When deploying the Gateway to an Oracle Cloud Ubuntu instance, traffic failed to
 ## The WebAssembly Payload Corruption Trap (Phase 13)
 **The Trap:** Injecting state into WebAssembly memory by directly appending `|STATE:` byte strings to the end of the binary violated WASM specifications and risked corrupting executable data segments.
 **Solution:** Transitioned to the `cap-std` library. State is now securely mounted as a Virtual File System (VMFS) node, allowing WASI-compliant guest modules to read state via standard POSIX file descriptors.
+
+## The Dashboard State Collision Trap (Phase 14)
+**The Trap:** When 50 nodes processed 50 different dataset shards simultaneously, overwriting the global `.state` file caused catastrophic data loss, as the final reporting node would blindly erase the progress of the previous 49 nodes.
+**Solution:** Built a Hybrid CRDT (Conflict-free Replicated Data Type) engine. The Gateway now parses localized JSON deltas, mathematically sums numeric collisions (e.g., `total_processed: 50`), and applies a Last-Write-Wins (LWW) timestamp rule for strings.
+
+## The Lazarus Deadlock (Phase 15)
+**The Trap:** Attempting to build a fault-tolerance monitor using standard `std::sync::Mutex` or blocking `while` loops completely paralyzed the core Tokio Libp2p routing threads, meaning the network would die while the node tried to heal itself.
+**Solution:** Implemented the `Lazarus` asynchronous MPSC channel loop. The fault-tolerance engine runs purely on background `tokio::spawn` tasks, bubbling up `CriticalFailure` structs asynchronously to the main loop via a `tokio::select!` barrier, preserving strict thread safety.
+

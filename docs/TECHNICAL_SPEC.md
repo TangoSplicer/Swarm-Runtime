@@ -5,12 +5,11 @@
 * **Control Plane:** `gossipsub` (Tracks `TEL:` hardware heartbeats and `SYNC_STATE:` Federation BFT replication).
 * **Data Plane:** `libp2p::request_response` (1-to-1 Unicast TCP streams) extended with `FetchData` and `DataPayload`.
 * **Storage Plane:** `libp2p::kad` (Kademlia DHT for VMFS file pinning).
-* **Security:** Cryptographic `PeerId` generation via `/dev/urandom` mapped to `.swarm_identity`. TCP stream encryption via Libp2p `Noise`.
-* **Consensus:** Dynamic Redundancy Factor (Max: 2) + SHA-256 Output State Hashing.
+* **Fault Tolerance:** `Lazarus` async MPSC monitoring engine.
 
-## 2. Distributed Stateful Smart Contracts
-Stateful contracts execute sequentially and atomically, bypassing legacy MapReduce slicing.
-1. **State Tracking:** The Gateway maintains a global `DashMap` of the latest verified `[contract_hash -> state_hash]`.
-2. **Atomic Dispatch:** The Gateway packages the payload and dispatches it over WAN.
-3. **Pre-Flight Sync:** The Worker verifies local `.state` hash against Gateway's expected hash, fetching via P2P if needed.
-4. **Memory Injection:** `judge` instantiates `wasmi` and explicitly overwrites linear memory offset `0` with `.state` bytes.
+## 2. Distributed Stateful Smart Contracts & CRDTs
+Stateful contracts execute concurrently across up to 50 nodes and merge deterministically.
+1. **VMFS Sandboxing:** `judge` instantiates `wasmi` and mounts state securely via `cap-std` Virtual File System POSIX descriptors.
+2. **Delta Extraction:** Workers parse the execution output into a `BTreeMap<String, String>` to inherently sort keys lexically.
+3. **CRDT Merging:** Gateways merge colliding deltas mathematically (Commutative addition for numbers, Last-Write-Wins timestamps for strings).
+4. **Deterministic Consensus:** The sorted merged BTreeMap is serialized and SHA-256 hashed for global Byzantine Fault Tolerance (BFT) verification.

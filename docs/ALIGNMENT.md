@@ -6,10 +6,11 @@
 * **Cloud Gateways:** Orchestration Gateways must run on accessible public IPs to serve as permanent DHT anchors.
 
 ## 2. Project State (v1.0.0 Enterprise Federation)
-* **Architecture:** Active-Active Global Public Mesh.
-* **Gateways:** Federated Orchestration Gateways (e.g., Oracle & AWS) sync BFT state hashes seamlessly via `swarm-gateway-sync` Gossipsub.
-* **Workers:** Android mobile nodes with High Availability (HA) routing. If Gateway A fails, Workers instantly dial Gateway B.
+* **Architecture:** Active-Active Global Public Mesh with `Lazarus` Fault Tolerance.
+* **Consensus:** Hybrid CRDT (Conflict-free Replicated Data Type) State Merging with BFT verification.
+* **Gateways:** Federated Orchestration Gateways sync BFT state hashes seamlessly via `swarm-gateway-sync` Gossipsub.
 
 ## 3. The Tokio Async Laws
 * **No Blocking Clients:** Synchronous blocking clients (e.g., `reqwest::blocking`) are strictly prohibited to prevent runtime thread abortion panics. Use `tokio::fs` for file I/O.
-* **The Clone and Release Law:** Never hold a `DashMap` lock across an `await` point or inside the Libp2p event loop. Clone the `Arc`, drop the lock, and process via `tokio::spawn`.
+* **The Clone and Release Law:** Never hold a `DashMap` or `Mutex` lock across an `await` point or inside the Libp2p event loop. 
+* **Asynchronous Fault Tolerance:** Component monitoring must be handled via `tokio::spawn` and `mpsc` channels (The Lazarus Pattern).

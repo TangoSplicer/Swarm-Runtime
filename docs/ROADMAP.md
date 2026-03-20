@@ -1,61 +1,45 @@
-# Swarm Runtime: Roadmap to V1.0 🚀
+# Swarm Runtime: Roadmap to V1.0 & Beyond 🚀
 
-## Phase 1 to 9.1: Core Engine & PKI Identity - ✅ COMPLETED
+## Phase 1 to 9.2: Core Engine & WAN Mesh - ✅ COMPLETED
 - Fault Tolerance, Async Axum API, Hash-Based Consensus.
-- P2P Pre-Flight State Sync & Atomic Smart Contract Routing.
 - Cryptographic Identity (`.swarm_identity`) and unified Network IDs via Libp2p `Noise`.
+- **Public Cloud Gateway:** Deployed Gateway to Oracle Cloud VPS.
+- **NAT Traversal:** Connected Termux edge workers over the WAN for BFT consensus.
 
-## Phase 9.2: The Global Mesh (Oracle Cloud) - ✅ COMPLETED
-- **Public Cloud Gateway:** Deployed the `swarm-node` Gateway to a public Oracle Cloud VPS.
-- **NAT Traversal:** Connected Termux mobile edge workers to the public Gateway over the WAN, proving real-world distributed BFT consensus.
+## Phase 10 to 12: Reliability & Polyglot Sandbox - ✅ COMPLETED
+- **Asynchronous Backpressure:** Load-shedding via `mpsc::channel(1000)` to prevent OOM.
+- **ARG_MAX Bypass:** Transitioned to `reqwest::multipart` for raw WASM streaming.
+- **Polyglot Execution:** Verified Python, JavaScript, Lua, Ruby, PHP, SQLite, and Go natively inside the WASI sandbox.
+- **Tokio Laws:** Eradicated `DashMap` deadlocks via the "Clone and Release" mandate.
 
-## Phase 10: Swarm Hardening (Reliability) - ✅ COMPLETED
-- **Memory Limits & Pruning:** Eradicated Base64 memory overhead; implemented raw `Vec<u8>` state hashing.
-- **Asynchronous Backpressure:** Transitioned to bounded `tokio::sync::mpsc::channel(1000)` queues with `try_send` load-shedding to gracefully reject traffic floods.
-- **Network Resilience:** Implemented strict network timeouts across CLI and Gateway boundaries to handle cellular packet loss.
-- **ARG_MAX Bypass:** Transitioned to `reqwest::multipart` to stream raw binaries over Axum without crashing Android terminals.
-
-## Phase 11: Polyglot ## Phase 11: Polyglot & Integration Verification - 🚧 NEXT Integration Verification - ✅ COMPLETED
-- **Language Sandbox Testing:** Verified execution, state retention, and DHT pinning for all supported languages: Python, JavaScript, Lua, Ruby, PHP, SQLite, Go, and Zig.
-- **Failure Condition Audits:** Simulated edge-case network drops during heavy multi-shard Polyglot executions.
-
-## Phase 12: Enterprise Federation (Production Readiness) - ✅ COMPLETED
-- **Gateway Replication:** Eliminated the single point of failure by implementing Gossipsub Active-Active `DashMap` state replication.
-- **HA Routing:** Mobile workers auto-dial secondary gateways upon connection drops.
-
-## Phase 13: Core Hardening & Tech Debt Resolution - ✅ COMPLETED
-- **Payload & Path Security:** Enforced cryptographic signature verification on Edge Workers and implement Cap-Std VMFS path sanitization to prevent directory traversal.
-- **Tokio Deadlock Eradication:** Refactored the Gateway DashMap scheduling loops to strictly enforce the clone-and-release pattern.
-- **WASI Standardization:** Eliminate byte-concatenation state injection in favor of secure, sandboxed POSIX file mounts.
-- **Algorithm & Network Optimization:** Eradicated O(n²) shard detection bottlenecks and implement adaptive Gossipsub telemetry backoff to prevent network flooding.
-- **API & UX Polish:** Connected the Axum router to the frontend dashboard, enforce strict HTTP payload validation, and dynamically sync version strings.
+## Phase 13: Core Hardening & WASI Standardization - ✅ COMPLETED
+- **Worker Security:** Enforced Ed25519 payload verification and `cap-std` VMFS path sanitization.
+- **WASI Standardization:** Replaced legacy byte-concatenation with strict WASI POSIX file mounts for state injection.
+- **Network Optimization:** Upgraded to O(1) `HashSet` lookups and adaptive Gossipsub backoff.
 
 ## Phase 14: Multi-Shard State Merging - ✅ COMPLETED
-- **Cryptographic Merging:** Build the logic to take multiple distributed execution shards and cryptographically merge their output states back together into a single master database.
+- **Deterministic Consensus:** Implemented `BTreeMap` lexical sorting for cryptographically identical state hashing.
+- **CRDT Resolution:** Built Hybrid Conflict-free Replicated Data Types (Commutative addition for numbers, Last-Write-Wins for strings).
 
-## Phase 15: Telemetry Control Center (V1.0 Prep) - ⏳ PLANNED
-- **Edge Dashboard:** Build a lightweight HTML/JS dashboard served natively by the Axum Gateway to visually track active Termux workers, hardware metrics, and federated job routing in real-time.
-
-## Phase 16: Security & Sandboxing Hardening - ⏳ PLANNED
-- **CPU Instruction Metering:** Inject strict "gas limits" into the WebAssembly execution to prevent malicious infinite loop traps on Android nodes.
-- **VMFS Quotas:** Strictly limit the Virtual File System (VMFS) capabilities to prevent storage exhaustion attacks.
-
-## Phase 17: V1.0 Release Candidate - ⏳ PLANNED
-- **Documentation & Installers:** Finalize developer documentation and one-click install scripts.
-- **Global Stress Test:** Execute massive multi-node stress tests to guarantee BFT consensus holds under severe cellular packet loss.
+## Phase 15: Enterprise CI/CD, Security & Core Audit - ✅ COMPLETED
+- **Automated CI/CD:** Implemented GitHub Actions with `cross-rs` for Android `aarch64` native builds.
+- **Fault Tolerance:** Deployed asynchronous `Lazarus` MPSC monitoring to auto-recover node failures.
+- **Chaos Testing:** Built native `MemoryTransport` test harnesses to simulate cellular packet loss.
+- **Deprecation:** Ripped out the legacy `prism` AST parser to fully embrace the WASI Polyglot architecture.
 
 ---
 
-# 🚀 Beyond V1.0: Universal Compilation (WORA)
+# 🚀 Beyond V1.0: Telemetry, UI & Universal Compilation
 
-## Phase 18: WebAssembly Component Model (WASI 0.2) - 🔮 FUTURE
-- **Polyglot Linking:** Upgrade from single-file execution to the WASI Component Model. Allow developers to compile complex projects with database logic in Rust, networking in Go, and UI in JS into a single, unified `.wasm` LEGO block.
-- **Interface Types (WIT):** Implement Wasm Interface Types to allow complex data structures (strings, nested arrays) to seamlessly cross the sandbox boundary natively.
+## Phase 16: The Telemetry Control Center - 🚧 NEXT
+- **Axum Web UI:** Serve a dedicated frontend dashboard from the Gateway.
+- **WebSocket Streaming:** Pipe `sysinfo` heartbeats and active Kademlia peer connections directly to the browser.
+- **Global Map:** Visualize the active Android Termux worker mesh on a real-time geographic overlay.
 
-## Phase 19: The Universal "Swarm App Wrapper" - 🔮 FUTURE
-- **Embedded Engine:** Strip the CLI from `swarm-node` and compile the Libp2p/WASI engine as a background C-compatible library (`libswarm`).
-- **Native GUI Integration:** Bundle `libswarm` with native OS rendering engines (via frameworks like Tauri or Egui). 
-- **The WORA Deployment:** Allow developers to ship a single executable (`.exe`, `.app`, or `.apk`). When a user double-clicks the app, it renders a native UI while seamlessly joining the global Swarm compute mesh in the background.
+## Phase 17: WebAssembly Component Model (WASI 0.2) - ⏳ PLANNED
+- **Polyglot Linking:** Allow developers to compile complex projects with database logic in Rust, networking in Go, and UI in JS into a single, unified `.wasm` LEGO block.
+- **Interface Types (WIT):** Implement Wasm Interface Types to allow complex data structures to seamlessly cross the sandbox boundary.
 
-## Phase 20: Desktop UI & GPU Acceleration - 🔮 FUTURE
-- **WebGPU Delegation:** Expose GPU hardware acceleration through the WASI sandbox so universal applications can offload rendering or ML inference tasks to the local graphics card before routing heavy dataset merging to the external Swarm.
+## Phase 18: The Universal "Swarm App Wrapper" - 🔮 FUTURE
+- **Embedded Engine:** Compile the Libp2p/WASI engine as a background C-compatible library (`libswarm`).
+- **Native GUI Integration:** Bundle `libswarm` with native OS rendering engines (Tauri/Egui). Allow developers to ship a single executable that renders a native UI while seamlessly joining the global compute mesh in the background.

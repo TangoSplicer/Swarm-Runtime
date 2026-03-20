@@ -1,5 +1,26 @@
 # Swarm Runtime Changelog
 
+
+# Swarm Runtime Changelog
+
+## [1.0.0] - 2026-03-20 (The Enterprise Release)
+### Added
+- **Multi-Shard State Merging (CRDT):** Gateways now mathematically merge execution outputs from up to 50 edge nodes using Commutative addition and Last-Write-Wins (LWW) conflict resolution.
+- **Lazarus Fault Tolerance:** Integrated an asynchronous MPSC monitoring engine to auto-restart crashed sub-routines without blocking the Tokio event loop.
+- **WASI Standardization:** Upgraded to strict `cap-std` VMFS sandboxing. State is now securely mounted via standard POSIX file descriptors, completely deprecating legacy memory-buffer injection.
+- **Enterprise CI/CD:** GitHub Actions pipeline established utilizing `cross-rs` for automated `aarch64-linux-android` cross-compilation testing.
+- **WORA Cryptography:** Replaced fragile Linux-only `/dev/urandom` reads with the cross-platform `rand::rngs::OsRng`.
+
+### Changed
+- **Network Resilience:** Removed excessive WAN mDNS chatter to save Android battery life.
+- **Security Hardening:** Implemented strict `ed25519-dalek` signature verification on Workers before payload execution.
+- **Algorithmic Scaling:** Transitioned tracking arrays to `HashSet`s for guaranteed O(1) shard lookups.
+- **Deprecation:** Removed the `prism` AST compiler crate to fully align with the polyglot WASI execution model.
+
+## [0.26.x +] 
+### I honestly forgot to update the file between these. 
+
+
 ## [0.26.0] - 2026-03-15
 ### Added
 - Enterprise Federation: Gateways now operate in Active-Active HA mode, replicating BFT consensus states via the `swarm-gateway-sync` Gossipsub topic.
