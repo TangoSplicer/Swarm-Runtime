@@ -239,10 +239,8 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                             Some(cmd) = rx.recv() => {
                                 match cmd {
                                     NodeCommand::Unicast(peer, req) => { let _ = p2p_node.send_request(&peer, req); },
-                                    NodeCommand::Broadcast(msg) => { let _ = p2p_node.publish_to_topic("swarm-control-plane", msg); },
                                     NodeCommand::GatewaySync(msg) => { let _ = p2p_node.publish_to_topic("swarm-gateway-sync", msg); },
                                     NodeCommand::Disconnect(peer) => { let _ = p2p_node.swarm.disconnect_peer_id(peer); },
-                                    NodeCommand::PinFile(_) => {}
                                     NodeCommand::FetchFile(hash, reply_tx) => {
                                         let peers = stat_c.lock().await.peers.clone();
                                         hash_to_tx.insert(hash.clone(), reply_tx);
