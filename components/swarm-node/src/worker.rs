@@ -51,6 +51,16 @@ pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey, seed: [u8; 3
                     }
                 }
             },
+            cmd = worker_rx.recv() => {
+                if let Some(cmd) = cmd {
+                    match cmd {
+                        NodeCommand::Unicast(peer, req) => { let _ = p2p_node.send_request(&peer, req); },
+                        NodeCommand::Broadcast(msg) => { let _ = p2p_node.publish_to_topic("swarm-control-plane", msg); },
+                        NodeCommand::Disconnect(peer) => { let _ = p2p_node.swarm.disconnect_peer_id(peer); },
+                        _ => {}
+                    }
+                }
+            },
             event = p2p_node.swarm.select_next_some() => {
                 match event {
                     SwarmEvent::Behaviour(SynapseBehaviorEvent::ReqRes(request_response::Event::Message { peer, message })) => {
