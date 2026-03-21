@@ -72,10 +72,8 @@ pub struct JobState {
 
 pub enum NodeCommand {
     Unicast(libp2p::PeerId, SwarmRequest),
-    Broadcast(String),
     GatewaySync(String),
     Disconnect(libp2p::PeerId),
-    PinFile(String),
     FetchFile(String, tokio::sync::oneshot::Sender<Option<Vec<u8>>>),
 }
 
