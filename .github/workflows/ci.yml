@@ -19,6 +19,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+      - name: Force Clang for Cryptography
+        run: |
+          echo "CC=clang" >> $GITHUB_ENV
+          echo "CXX=clang++" >> $GITHUB_ENV
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -26,10 +30,10 @@ jobs:
           components: rustfmt, clippy
 
       - name: Enforce Formatting
-        run: CC=clang CXX=clang++ cargo fmt --all -- --check
+        run: cargo fmt --all -- --check
 
       - name: Strict Clippy Audit
-        run: CC=clang CXX=clang++ cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace -- -D warnings
 
   test-and-build:
     name: Matrix Test & Build
@@ -43,6 +47,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+      - name: Force Clang for Cryptography
+        run: |
+          echo "CC=clang" >> $GITHUB_ENV
+          echo "CXX=clang++" >> $GITHUB_ENV
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
