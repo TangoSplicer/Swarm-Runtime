@@ -1,16 +1,7 @@
 use anyhow::Result;
 use libp2p::{
-    core::transport::memory::MemoryTransport,
-    core::upgrade::Version,
-    futures::StreamExt, // FIX: Bring .next() into scope
-    identity,
-    noise,
-    request_response,
-    swarm::SwarmEvent,
-    yamux,
-    PeerId,
-    Swarm,
-    Transport,
+    core::transport::memory::MemoryTransport, core::upgrade::Version, futures::StreamExt, identity,
+    noise, request_response, swarm::SwarmEvent, yamux, PeerId, Swarm, Transport,
 };
 use std::time::Duration;
 use synapse::{SwarmRequest, SwarmResponse};
@@ -28,8 +19,6 @@ pub async fn build_chaos_swarm(
     let base_transport = MemoryTransport::default();
     let chaos_transport = base_transport
         .map(move |out, _| {
-            // FIX: Bypass 'rand' features entirely. A deterministic 50ms delay
-            // perfectly simulates cellular latency for BFT testing.
             std::thread::sleep(Duration::from_millis(50));
             out
         })
@@ -47,7 +36,6 @@ pub async fn build_chaos_swarm(
         req_res_config,
     );
 
-    // FIX: libp2p 0.53 expects the transport directly, without the Ok() wrapper
     let swarm = libp2p::SwarmBuilder::with_existing_identity(id_keys)
         .with_tokio()
         .with_other_transport(|_| chaos_transport)
@@ -87,6 +75,15 @@ async fn test_cellular_packet_loss_bft_sync() -> Result<()> {
             }
         }
     });
+
+    // 🚨 FIX: Actually wait for the Libp2p connection handshake to complete!
+    loop {
+        if let Some(event) = worker_swarm.next().await {
+            if let SwarmEvent::ConnectionEstablished { .. } = event {
+                break;
+            }
+        }
+    }
 
     let request_id = worker_swarm.behaviour_mut().send_request(
         &gateway_peer,
