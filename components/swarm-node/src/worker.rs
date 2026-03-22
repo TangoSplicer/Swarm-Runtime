@@ -1,3 +1,4 @@
+#![allow(clippy::collapsible_match)]
 use anyhow::Result;
 use dashmap::DashSet;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};

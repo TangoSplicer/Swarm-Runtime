@@ -192,7 +192,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                                         if let Some(peer_assignments) = job.assignments.get(&shard_idx) {
                                             for (peer, start_time) in peer_assignments {
                                                 if start_time.elapsed() > Duration::from_secs(15) {
-                                                    let has_result = job.raw_results.get(&shard_idx).map_or(false, |r| r.contains_key(peer));
+                                                    let has_result = job.raw_results.get(&shard_idx).is_some_and(|r| r.contains_key(peer));
                                                     if !has_result {
                                                         println!("⏰ SLA Timeout: Peer {} dropped Shard {}. Re-routing...", peer, shard_idx);
                                                         failed_peers.push(*peer);
@@ -255,8 +255,8 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                                 match event {
                                     SwarmEvent::Behaviour(SynapseBehaviorEvent::Gossipsub(gossipsub::Event::Message { message, .. })) => {
                                         let text = String::from_utf8_lossy(&message.data);
-                                        if text.starts_with("SYNC_STATE:") {
-                                            let payload = text[11..].to_string();
+                                        if let Some(stripped) = text.strip_prefix("SYNC_STATE:") {
+                                        let payload = stripped.to_string();
                                             let cs_clone = contract_states_c.clone();
                                             tokio::spawn(async move {
                                                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -267,8 +267,8 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                                                 }
                                             });
                                         }
-                                        if text.starts_with("TEL:") {
-                                            if let Ok(tel) = serde_json::from_str::<Telemetry>(&text[4..]) {
+                                        if let Some(stripped) = text.strip_prefix("TEL:") {
+                                        if let Ok(tel) = serde_json::from_str::<Telemetry>(stripped) {
                                                 if let Ok(peer) = tel.peer_id.parse::<libp2p::PeerId>() {
                                                     tel_c.insert(peer, tel);
                                                 }

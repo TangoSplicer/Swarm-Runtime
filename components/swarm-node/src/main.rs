@@ -1,3 +1,4 @@
+#![allow(clippy::never_loop)]
 mod gateway;
 mod types;
 mod worker;
@@ -110,7 +111,7 @@ async fn main() -> Result<()> {
             let alert_tx_clone = alert_tx.clone();
 
             let worker_shard = *shard;
-            let worker_key = verifying_key.clone();
+            let worker_key = verifying_key;
             let worker_seed = seed;
 
             tokio::spawn(async move {

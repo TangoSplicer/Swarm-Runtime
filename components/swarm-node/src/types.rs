@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 use dashmap::DashMap;
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
