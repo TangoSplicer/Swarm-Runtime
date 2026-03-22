@@ -14,7 +14,6 @@ pub async fn build_reliable_swarm() -> Result<(
     let id_keys = identity::Keypair::generate_ed25519();
     let peer_id = PeerId::from(id_keys.public());
 
-    // 🚨 FIX: Remove thread-blocking chaos. Use pure memory transport to avoid Tokio starvation.
     let transport = MemoryTransport::default()
         .upgrade(Version::V1)
         .authenticate(noise::Config::new(&id_keys).unwrap())
@@ -46,17 +45,14 @@ async fn test_cellular_packet_loss_bft_sync() -> Result<()> {
     let (gateway_peer, mut gateway_swarm) = build_reliable_swarm().await?;
     let (_worker_peer, mut worker_swarm) = build_reliable_swarm().await?;
 
-    // 🚨 FIX: Bind to dynamic memory port 0 to prevent address collisions in CI
     gateway_swarm.listen_on("/memory/0".parse()?)?;
 
-    // Wait for the gateway to successfully assign and announce its memory address
     let gateway_addr = loop {
         if let Some(SwarmEvent::NewListenAddr { address, .. }) = gateway_swarm.next().await {
             break address;
         }
     };
 
-    // Spawn the Gateway listener task
     tokio::spawn(async move {
         loop {
             if let Some(event) = gateway_swarm.next().await {
@@ -78,36 +74,37 @@ async fn test_cellular_packet_loss_bft_sync() -> Result<()> {
         }
     });
 
-    // Worker connects to the dynamically assigned Gateway address
     worker_swarm.dial(gateway_addr)?;
 
-    // Wait for the secure tunnel to establish
-    loop {
-        if let Some(event) = worker_swarm.next().await {
-            if let SwarmEvent::ConnectionEstablished { .. } = event {
-                break;
-            }
-        }
-    }
+    let mut request_id = None;
 
-    // Fire the payload
-    let request_id = worker_swarm.behaviour_mut().send_request(
-        &gateway_peer,
-        SwarmRequest::FetchData("BFT_SYNC".to_string()),
-    );
-
-    // Wait for the BFT Ack with a generous 5-second CI timeout buffer
     tokio::select! {
         _ = async {
             loop {
                 if let Some(event) = worker_swarm.next().await {
-                    if let SwarmEvent::Behaviour(request_response::Event::Message {
-                        message: request_response::Message::Response { request_id: recv_id, response },
-                        ..
-                    }) = event {
-                        if recv_id == request_id && response == SwarmResponse::Ack {
-                            break;
+                    match event {
+                        SwarmEvent::ConnectionEstablished { .. } => {
+                            // 🚨 FIX: Inject the payload in the exact same tick to prevent the connection from being reaped!
+                            request_id = Some(worker_swarm
+                                .behaviour_mut()
+                                .send_request(&gateway_peer, SwarmRequest::FetchData("BFT_SYNC".to_string())));
                         }
+                        SwarmEvent::Behaviour(request_response::Event::Message {
+                            message: request_response::Message::Response { request_id: recv_id, response },
+                            ..
+                        }) => {
+                            if Some(recv_id) == request_id && response == SwarmResponse::Ack {
+                                break;
+                            }
+                        }
+                        // 🚨 FIX: Aggressive debug traps. If it fails, tell us exactly why instantly.
+                        SwarmEvent::OutgoingConnectionError { error, .. } => {
+                            panic!("🔥 Outbound connection failed: {:?}", error);
+                        }
+                        SwarmEvent::Behaviour(request_response::Event::OutboundFailure { error, .. }) => {
+                            panic!("🔥 Outbound request failed: {:?}", error);
+                        }
+                        _ => {}
                     }
                 }
             }
