@@ -8,6 +8,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CC: clang
+  CXX: clang++
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
