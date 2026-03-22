@@ -34,6 +34,8 @@ pub async fn build_reliable_swarm() -> Result<(
         .unwrap()
         .with_behaviour(|_| behaviour)
         .unwrap()
+        // 🚨 FIX: Add a 10-second idle timeout to prevent the Swarm from killing the socket before Yamux flushes the response!
+        .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(10)))
         .build();
 
     Ok((peer_id, swarm))
@@ -46,14 +48,12 @@ async fn test_cellular_packet_loss_bft_sync() -> Result<()> {
 
     gateway_swarm.listen_on("/memory/0".parse()?)?;
 
-    // Wait for Gateway to successfully bind to its memory port
     let gateway_addr = loop {
         if let Some(SwarmEvent::NewListenAddr { address, .. }) = gateway_swarm.next().await {
             break address;
         }
     };
 
-    // 🚨 FIX: Hand the address directly to the behaviour. Let IT manage the connection and keep-alive!
     worker_swarm
         .behaviour_mut()
         .add_address(&gateway_peer, gateway_addr);
@@ -62,7 +62,6 @@ async fn test_cellular_packet_loss_bft_sync() -> Result<()> {
         SwarmRequest::FetchData("BFT_SYNC".to_string()),
     );
 
-    // Execute the unified network loop
     let network_loop = async {
         loop {
             tokio::select! {
@@ -87,7 +86,7 @@ async fn test_cellular_packet_loss_bft_sync() -> Result<()> {
                             ..
                         }) => {
                             if request_id == expected_request_id && response == SwarmResponse::Ack {
-                                return Ok::<(), anyhow::Error>(()); // Success! Break out cleanly.
+                                return Ok::<(), anyhow::Error>(());
                             }
                         }
                         SwarmEvent::OutgoingConnectionError { error, .. } => panic!("🔥 Connection failed: {:?}", error),
@@ -99,7 +98,6 @@ async fn test_cellular_packet_loss_bft_sync() -> Result<()> {
         }
     };
 
-    // 🚨 FIX: An unbreakable absolute timeout wrapper
     tokio::time::timeout(Duration::from_secs(5), network_loop)
         .await
         .expect("❌ Test failed: Gateway did not acknowledge payload within 5 seconds")?;
