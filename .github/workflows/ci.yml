@@ -53,10 +53,20 @@ jobs:
         run: cargo install cross --git https://github.com/cross-rs/cross
 
       - name: Build Workspace
-        run: cross build --workspace --target ${{ matrix.target }} --release
+        run: |
+          if [ "${{ matrix.target }}" == "x86_64-unknown-linux-gnu" ]; then
+            cargo build --workspace --target ${{ matrix.target }} --release
+          else
+            cross build --workspace --target ${{ matrix.target }} --release
+          fi
 
       - name: Run Integration Tests
         # We only run tests natively on x86_64 to avoid Android QEMU overhead in CI,
         # but the code is cross-compiled to guarantee it builds for Termux.
         if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: cross test --workspace --target ${{ matrix.target }}
+        run: |
+          if [ "${{ matrix.target }}" == "x86_64-unknown-linux-gnu" ]; then
+            cargo test --workspace --target ${{ matrix.target }}
+          else
+            cross test --workspace --target ${{ matrix.target }}
+          fi
