@@ -11,13 +11,13 @@ for root, dirs, files in os.walk('.'):
         
         # If reqwest is in the file but doesn't have rustls configured yet
         if 'reqwest' in content and 'rustls-tls' not in content:
-            # Swap simple version strings
+            # Swap simple version strings: reqwest = "0.11"
             content = re.sub(
                 r'reqwest\s*=\s*"([^"]+)"', 
                 r'reqwest = { version = "\1", default-features = false, features = ["rustls-tls"] }', 
                 content
             )
-            # Swap inline dictionary declarations
+            # Swap inline dictionary declarations: reqwest = { version = "0.11" }
             content = re.sub(
                 r'reqwest\s*=\s*\{\s*version\s*=\s*"([^"]+)"\s*\}', 
                 r'reqwest = { version = "\1", default-features = false, features = ["rustls-tls"] }', 
