@@ -53,57 +53,57 @@ async fn test_cellular_packet_loss_bft_sync() -> Result<()> {
         }
     };
 
-    // Worker dials the Gateway
-    worker_swarm.dial(gateway_addr)?;
+    // 🚨 FIX: Hand the address directly to the behaviour. Let IT manage the connection and keep-alive!
+    worker_swarm
+        .behaviour_mut()
+        .add_address(&gateway_peer, gateway_addr);
+    let expected_request_id = worker_swarm.behaviour_mut().send_request(
+        &gateway_peer,
+        SwarmRequest::FetchData("BFT_SYNC".to_string()),
+    );
 
-    let mut request_id = None;
-
-    // 🚨 FIX: Drive BOTH swarms in the exact same event loop to guarantee fair execution
-    loop {
-        tokio::select! {
-            // Gateway Event Poller
-            event = gateway_swarm.next() => {
-                let Some(event) = event else { continue };
-                if let SwarmEvent::Behaviour(request_response::Event::Message {
-                    message: request_response::Message::Request { request, channel, .. },
-                    ..
-                }) = event
-                {
-                    if request == SwarmRequest::FetchData("BFT_SYNC".to_string()) {
-                        let _ = gateway_swarm.behaviour_mut().send_response(channel, SwarmResponse::Ack);
-                    }
-                }
-            }
-
-            // Worker Event Poller
-            event = worker_swarm.next() => {
-                let Some(event) = event else { continue };
-                match event {
-                    SwarmEvent::ConnectionEstablished { .. } => {
-                        // Connection is fully synced on both ends. Fire payload.
-                        request_id = Some(worker_swarm
-                            .behaviour_mut()
-                            .send_request(&gateway_peer, SwarmRequest::FetchData("BFT_SYNC".to_string())));
-                    }
-                    SwarmEvent::Behaviour(request_response::Event::Message {
-                        message: request_response::Message::Response { request_id: recv_id, response },
+    // Execute the unified network loop
+    let network_loop = async {
+        loop {
+            tokio::select! {
+                event = gateway_swarm.next() => {
+                    let Some(event) = event else { continue };
+                    if let SwarmEvent::Behaviour(request_response::Event::Message {
+                        message: request_response::Message::Request { request, channel, .. },
                         ..
-                    }) => {
-                        if Some(recv_id) == request_id && response == SwarmResponse::Ack {
-                            println!("✅ BFT State Sync successful!");
-                            return Ok(()); // Success! Break out of the test loop cleanly.
+                    }) = event
+                    {
+                        if request == SwarmRequest::FetchData("BFT_SYNC".to_string()) {
+                            let _ = gateway_swarm.behaviour_mut().send_response(channel, SwarmResponse::Ack);
                         }
                     }
-                    SwarmEvent::OutgoingConnectionError { error, .. } => panic!("🔥 Connection failed: {:?}", error),
-                    SwarmEvent::Behaviour(request_response::Event::OutboundFailure { error, .. }) => panic!("🔥 Request failed: {:?}", error),
-                    _ => {}
+                }
+
+                event = worker_swarm.next() => {
+                    let Some(event) = event else { continue };
+                    match event {
+                        SwarmEvent::Behaviour(request_response::Event::Message {
+                            message: request_response::Message::Response { request_id, response },
+                            ..
+                        }) => {
+                            if request_id == expected_request_id && response == SwarmResponse::Ack {
+                                return Ok::<(), anyhow::Error>(()); // Success! Break out cleanly.
+                            }
+                        }
+                        SwarmEvent::OutgoingConnectionError { error, .. } => panic!("🔥 Connection failed: {:?}", error),
+                        SwarmEvent::Behaviour(request_response::Event::OutboundFailure { error, .. }) => panic!("🔥 Request failed: {:?}", error),
+                        _ => {}
+                    }
                 }
             }
-
-            // Hard Timeout Fallback
-            _ = tokio::time::sleep(Duration::from_secs(5)) => {
-                panic!("❌ Test failed: Gateway did not acknowledge payload within 5 seconds");
-            }
         }
-    }
+    };
+
+    // 🚨 FIX: An unbreakable absolute timeout wrapper
+    tokio::time::timeout(Duration::from_secs(5), network_loop)
+        .await
+        .expect("❌ Test failed: Gateway did not acknowledge payload within 5 seconds")?;
+
+    println!("✅ BFT State Sync successful!");
+    Ok(())
 }
