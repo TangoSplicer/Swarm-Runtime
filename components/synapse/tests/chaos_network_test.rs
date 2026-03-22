@@ -62,7 +62,7 @@ pub async fn build_chaos_swarm(
 #[tokio::test]
 async fn test_cellular_packet_loss_bft_sync() -> Result<()> {
     let (gateway_peer, mut gateway_swarm) = build_chaos_swarm(0.2).await?;
-    let (worker_peer, mut worker_swarm) = build_chaos_swarm(0.2).await?;
+    let (_worker_peer, mut worker_swarm) = build_chaos_swarm(0.2).await?;
 
     let gateway_addr: libp2p::Multiaddr = "/memory/1".parse()?;
     gateway_swarm.listen_on(gateway_addr.clone())?;
