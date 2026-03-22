@@ -26,10 +26,10 @@ jobs:
           components: rustfmt, clippy
 
       - name: Enforce Formatting
-        run: cargo fmt --all -- --check
+        run: CC=clang CXX=clang++ cargo fmt --all -- --check
 
       - name: Strict Clippy Audit
-        run: cargo clippy --workspace -- -D warnings
+        run: CC=clang CXX=clang++ cargo clippy --workspace -- -D warnings
 
   test-and-build:
     name: Matrix Test & Build
