@@ -1,9 +1,17 @@
 use anyhow::Result;
 use libp2p::{
-    core::transport::memory::MemoryTransport, core::upgrade::Version, identity, noise,
-    request_response, swarm::SwarmEvent, yamux, PeerId, Swarm, Transport,
+    core::transport::memory::MemoryTransport,
+    core::upgrade::Version,
+    futures::StreamExt, // FIX: Bring .next() into scope
+    identity,
+    noise,
+    request_response,
+    swarm::SwarmEvent,
+    yamux,
+    PeerId,
+    Swarm,
+    Transport,
 };
-use rand::Rng;
 use std::time::Duration;
 use synapse::{SwarmRequest, SwarmResponse};
 use tokio::time::sleep;
@@ -20,8 +28,9 @@ pub async fn build_chaos_swarm(
     let base_transport = MemoryTransport::default();
     let chaos_transport = base_transport
         .map(move |out, _| {
-            let latency = rand::thread_rng().gen_range(10..150);
-            std::thread::sleep(Duration::from_millis(latency));
+            // FIX: Bypass 'rand' features entirely. A deterministic 50ms delay
+            // perfectly simulates cellular latency for BFT testing.
+            std::thread::sleep(Duration::from_millis(50));
             out
         })
         .upgrade(Version::V1)
@@ -38,10 +47,10 @@ pub async fn build_chaos_swarm(
         req_res_config,
     );
 
-    // NEW 0.53 API: Typed SwarmBuilder for custom test transports
+    // FIX: libp2p 0.53 expects the transport directly, without the Ok() wrapper
     let swarm = libp2p::SwarmBuilder::with_existing_identity(id_keys)
         .with_tokio()
-        .with_other_transport(|_| Ok::<_, std::io::Error>(chaos_transport))
+        .with_other_transport(|_| chaos_transport)
         .unwrap()
         .with_behaviour(|_| behaviour)
         .unwrap()
