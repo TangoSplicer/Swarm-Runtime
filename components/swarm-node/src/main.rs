@@ -119,8 +119,7 @@ async fn main() -> Result<()> {
             let worker_bootnode = bootnode.clone();
             tokio::spawn(async move {
                 if let Err(e) =
-                    worker::run_worker(worker_shard, worker_key, worker_seed, bootnode.clone())
-                        .await
+                    worker::run_worker(worker_shard, worker_key, worker_seed, worker_bootnode).await
                 {
                     let _ = alert_tx_clone
                         .send(CriticalFailure {
@@ -156,7 +155,6 @@ async fn main() -> Result<()> {
             let gw_port = *port;
             let gw_key = signing_key.clone();
 
-            let worker_bootnode = bootnode.clone();
             tokio::spawn(async move {
                 if let Err(e) = gateway::run_gateway(gw_port, gw_key).await {
                     let _ = alert_tx_clone
