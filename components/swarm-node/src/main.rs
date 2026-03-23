@@ -117,7 +117,10 @@ async fn main() -> Result<()> {
             let worker_seed = seed;
 
             tokio::spawn(async move {
-                if let Err(e) = worker::run_worker(worker_shard, worker_key, worker_seed, bootnode.clone()).await {
+                if let Err(e) =
+                    worker::run_worker(worker_shard, worker_key, worker_seed, bootnode.clone())
+                        .await
+                {
                     let _ = alert_tx_clone
                         .send(CriticalFailure {
                             service_name: format!("EdgeWorker-Shard-{}", worker_shard),
