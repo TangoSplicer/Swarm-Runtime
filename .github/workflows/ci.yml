@@ -72,10 +72,10 @@ jobs:
             cross test --workspace --target ${{ matrix.target }}
           fi
 
-      - name: Upload Android Binaries
+      - name: Upload Compiled Binaries
         uses: actions/upload-artifact@v4
         with:
-          name: swarm-android-binaries
+          name: swarm-binaries-${{ matrix.target }}
           path: |
             target/${{ matrix.target }}/release/swarm-node
             target/${{ matrix.target }}/release/swarm-cli
