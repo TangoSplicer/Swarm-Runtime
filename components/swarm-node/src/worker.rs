@@ -23,12 +23,20 @@ fn safe_state_path(contract_id: &str) -> Option<String> {
     }
 }
 
-pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey, seed: [u8; 32]) -> Result<()> {
+pub async fn run_worker(shard_id: u64, verifying_key: VerifyingKey, seed: [u8; 32], bootnode: String) -> Result<()> {
     let port = 4000 + shard_id as u16;
     let mut p2p_node = SynapseNode::new(port, seed).await?;
     let local_peer_id = *p2p_node.swarm.local_peer_id();
 
     p2p_node.subscribe("swarm-control-plane")?;
+
+    if let Ok(addr) = bootnode.parse::<libp2p::Multiaddr>() {
+        println!("📞 Dialing Orchestration Gateway: {}", addr);
+        let _ = p2p_node.swarm.dial(addr);
+    } else {
+        eprintln!("⚠️ WARNING: Invalid bootnode multiaddress provided. Node will run in isolation.");
+    }
+
 
     let connected_peers = Arc::new(DashSet::new());
 

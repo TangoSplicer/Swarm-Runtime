@@ -28,6 +28,8 @@ enum Commands {
     Start {
         #[arg(long)]
         shard: u64,
+        #[arg(long)]
+        bootnode: String,
     },
     /// Start the Orchestration Gateway
     Gateway {
@@ -105,7 +107,7 @@ async fn main() -> Result<()> {
     let seed = signing_key.to_bytes();
 
     match &cli.command {
-        Commands::Start { shard } => {
+        Commands::Start { shard, bootnode } => {
             // PHASE 15: Lazarus Monitoring for the Edge Worker
             let (alert_tx, mut alert_rx) = mpsc::channel::<CriticalFailure>(32);
             let alert_tx_clone = alert_tx.clone();
@@ -115,7 +117,7 @@ async fn main() -> Result<()> {
             let worker_seed = seed;
 
             tokio::spawn(async move {
-                if let Err(e) = worker::run_worker(worker_shard, worker_key, worker_seed).await {
+                if let Err(e) = worker::run_worker(worker_shard, worker_key, worker_seed, bootnode.clone()).await {
                     let _ = alert_tx_clone
                         .send(CriticalFailure {
                             service_name: format!("EdgeWorker-Shard-{}", worker_shard),
