@@ -79,7 +79,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                                     let mut job = job_arc.lock().await;
 
                                     if let Some(dataset) = job.unassigned_dataset.take() {
-                                        if active_peers.is_empty() || tel_c.is_empty() {
+                                        if active_peers.is_empty() {
                                             job.unassigned_dataset = Some(dataset);
                                             continue;
                                         }
