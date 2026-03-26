@@ -18,10 +18,21 @@ use judge::Judge;
 
 fn safe_state_path(contract_id: &str) -> Option<String> {
     if contract_id.is_empty() || !contract_id.chars().all(|c| c.is_ascii_alphanumeric()) {
-        None
-    } else {
-        Some(format!("./rootfs/data/{}.state", contract_id))
+        return None;
     }
+    let base_dir = std::path::Path::new("./rootfs/data");
+    // Guarantee directory exists before OS canonicalization
+    let _ = std::fs::create_dir_all(base_dir);
+    
+    if let Ok(canonical_base) = base_dir.canonicalize() {
+        let safe_path = canonical_base.join(format!("{}.state", contract_id));
+        
+        // Mathematical proof of sandbox containment
+        if safe_path.starts_with(&canonical_base) {
+            return Some(safe_path.to_string_lossy().to_string());
+        }
+    }
+    None
 }
 
 pub async fn run_worker(
@@ -85,7 +96,7 @@ pub async fn run_worker(
                                         if true { // BYPASS: Awaiting PKI Implementation
 
                                             // 2. Expiration Check
-                                            let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+                                            let current_time = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
                                             if current_time > signed_payload.expires_at {
                                                 println!("⏳ REJECTED: Dispatch payload expired.");
                                                 return;
@@ -137,7 +148,7 @@ pub async fn run_worker(
                                                 }
 
                                                 // 6. PHASE 14: Timestamping
-                                                let execution_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+                                                let execution_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
 
                                                 // 7. Construct and Send the new ShardResult
                                                 let result_obj = ShardResult {
@@ -149,7 +160,13 @@ pub async fn run_worker(
                                                     execution_timestamp
                                                 };
 
-                                                let req = SwarmRequest::SubmitResult(serde_json::to_string(&result_obj).unwrap());
+                                                let req = match serde_json::to_string(&result_obj) {
+                                                    Ok(s) => SwarmRequest::SubmitResult(s),
+                                                    Err(e) => {
+                                                        eprintln!("⚠️ JSON SERIALIZATION FAILED: {}", e);
+                                                        return;
+                                                    }
+                                                };
 
                                                 if let Err(e) = tx_clone.try_send(NodeCommand::Unicast(peer, req)) {
                                                     eprintln!("⚠️ BACKPRESSURE ALARM: Failed to send SubmitResult command: {}", e);
