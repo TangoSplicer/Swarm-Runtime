@@ -66,9 +66,13 @@ struct DeployMetadata {
 #[derive(Deserialize, Debug)]
 struct JobStatusResponse {
     status: String,
+    #[serde(default)]
     total_sum: i32,
+    #[serde(rename = "breakdown", default)]
     _breakdown: Vec<(u32, i32)>,
+    #[serde(default)]
     hashes: Vec<(u32, String)>,
+    #[serde(default)]
     missing_shards: Vec<u32>,
 }
 
