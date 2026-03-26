@@ -107,7 +107,7 @@ pub async fn run_worker(
                                                     &shard_data.data,
                                                     "POLYGLOT:WASM",
                                                     &state_path
-                                                ).unwrap_or((-1, "ERROR".to_string(), None));
+                                                ).unwrap_or_else(|e| { println!("❌ JUDGE FATAL ERROR: {:?}", e); (-1, "ERROR".to_string(), None) });
 
 
 
