@@ -23,10 +23,10 @@ fn safe_state_path(contract_id: &str) -> Option<String> {
     let base_dir = std::path::Path::new("./rootfs/data");
     // Guarantee directory exists before OS canonicalization
     let _ = std::fs::create_dir_all(base_dir);
-    
+
     if let Ok(canonical_base) = base_dir.canonicalize() {
         let safe_path = canonical_base.join(format!("{}.state", contract_id));
-        
+
         // Mathematical proof of sandbox containment
         if safe_path.starts_with(&canonical_base) {
             return Some(safe_path.to_string_lossy().to_string());
