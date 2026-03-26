@@ -1,3 +1,4 @@
+#![allow(unused)]
 #![allow(clippy::collapsible_match)]
 use anyhow::Result;
 use dashmap::DashSet;
