@@ -30,6 +30,8 @@ enum Commands {
         shard: u64,
         #[arg(long)]
         bootnode: String,
+        #[arg(long)]
+        trusted_gateway: String,
     },
     /// Start the Orchestration Gateway
     Gateway {
@@ -124,16 +126,18 @@ async fn main() -> Result<()> {
     };
 
     let verifying_key = signing_key.verifying_key();
+    println!("🔑 Node Public Key (Hex): {}", hex::encode(verifying_key.as_bytes()));
     let seed = signing_key.to_bytes();
 
     match &cli.command {
-        Commands::Start { shard, bootnode } => {
+        Commands::Start { shard, bootnode, trusted_gateway } => {
             // PHASE 15: Lazarus Monitoring for the Edge Worker
             let (alert_tx, mut alert_rx) = mpsc::channel::<CriticalFailure>(32);
             let alert_tx_clone = alert_tx.clone();
 
             let worker_shard = *shard;
-            let worker_key = verifying_key;
+            let gateway_bytes = hex::decode(trusted_gateway).expect("Failed to decode trusted_gateway hex");
+            let worker_key = ed25519_dalek::VerifyingKey::from_bytes(gateway_bytes.as_slice().try_into().expect("Invalid length")).expect("Invalid gateway public key");
             let worker_seed = seed;
 
             let worker_bootnode = bootnode.clone();
