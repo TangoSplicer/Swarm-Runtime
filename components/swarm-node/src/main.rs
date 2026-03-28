@@ -143,7 +143,8 @@ async fn main() -> Result<()> {
             let alert_tx_clone = alert_tx.clone();
 
             let worker_shard = *shard;
-            let gateway_bytes = hex::decode(trusted_gateway).expect("Failed to decode trusted_gateway hex");
+            let gateway_bytes =
+                    hex::decode(trusted_gateway).expect("Failed to decode trusted_gateway hex");
             let worker_key = ed25519_dalek::VerifyingKey::from_bytes(
                 gateway_bytes.as_slice().try_into().expect("Invalid length"),
             )
