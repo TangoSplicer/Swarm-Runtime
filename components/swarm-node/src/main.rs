@@ -201,9 +201,16 @@ async fn main() -> Result<()> {
                 .unwrap();
             println!("🚀 Preparing deployment for: {}", file);
 
+            let meta = fs::metadata(file).context("Failed to read file metadata")?;
+            if meta.len() > 50 * 1024 * 1024 {
+                anyhow::bail!("SECURITY ALARM: Payload exceeds 50MB limit. Deployment aborted to prevent OOM.");
+            }
             let (wasm_bytes, dataset) = match lang.to_lowercase().as_str() {
                 "wasm" => {
                     let wasm_bytes = fs::read(file).context("Failed to read .wasm file")?;
+                    if !wasm_bytes.starts_with(b"\0asm") {
+                        anyhow::bail!("SECURITY ALARM: Invalid WASM magic number. File is corrupted or malicious.");
+                    }
                     (wasm_bytes, vec!["EXECUTE_NATIVE_WASM".to_string()])
                 }
                 "python" | "js" | "javascript" | "lua" | "ruby" | "rb" | "php" | "sqlite"
