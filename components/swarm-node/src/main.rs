@@ -113,7 +113,8 @@ async fn main() -> Result<()> {
                 .mode(0o600)
                 .open(id_path)
                 .context("Failed to open identity file with strict permissions")?;
-            std::io::Write::write_all(&mut file, &key.to_bytes()).context("Failed to write identity")?;
+            std::io::Write::write_all(&mut file, &key.to_bytes())
+                .context("Failed to write identity")?;
         }
         #[cfg(not(unix))]
         {
