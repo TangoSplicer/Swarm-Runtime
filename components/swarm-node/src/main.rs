@@ -103,7 +103,22 @@ async fn main() -> Result<()> {
         }
         let mut csprng = OsRng;
         let key = SigningKey::generate(&mut csprng);
-        fs::write(id_path, key.to_bytes()).context("Failed to write identity")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(id_path)
+                .context("Failed to open identity file with strict permissions")?;
+            std::io::Write::write_all(&mut file, &key.to_bytes()).context("Failed to write identity")?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(id_path, key.to_bytes()).context("Failed to write identity")?;
+        }
         key
     };
 
