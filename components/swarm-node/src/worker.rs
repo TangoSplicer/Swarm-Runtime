@@ -2,37 +2,61 @@
 #![allow(clippy::collapsible_match)]
 use anyhow::Result;
 use dashmap::DashSet;
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use futures::StreamExt;
 use libp2p::{request_response, swarm::SwarmEvent};
 use sha2::Digest;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::fs;
-
 use synapse::{SwarmRequest, SwarmResponse, SynapseBehaviorEvent, SynapseNode};
 // Assuming Judge is available in your workspace to handle the actual Wasm/Polyglot execution
 use crate::types::*;
 use judge::Judge;
 
-fn safe_state_path(contract_id: &str) -> Option<String> {
-    if contract_id.is_empty() || !contract_id.chars().all(|c| c.is_ascii_alphanumeric()) {
-        return None;
-    }
-    let base_dir = std::path::Path::new("./rootfs/data");
-    // Guarantee directory exists before OS canonicalization
-    let _ = std::fs::create_dir_all(base_dir);
-
-    if let Ok(canonical_base) = base_dir.canonicalize() {
-        let safe_path = canonical_base.join(format!("{}.state", contract_id));
-
-        // Mathematical proof of sandbox containment
-        if safe_path.starts_with(&canonical_base) {
-            return Some(safe_path.to_string_lossy().to_string());
+fn runtime_module(shard: &Shard) -> Result<Vec<u8>> {
+    match shard.runtime.runtime_file() {
+        None => {
+            if !shard.wasm_image.starts_with(b"\0asm") {
+                anyhow::bail!("Wasm job payload does not have a valid WebAssembly magic header");
+            }
+            Ok(shard.wasm_image.clone())
+        }
+        Some(runtime_file) => {
+            let runtime_path = std::path::Path::new("./runtimes").join(runtime_file);
+            let runtime = std::fs::read(&runtime_path).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to read declared runtime {}: {}",
+                    runtime_path.display(),
+                    e
+                )
+            })?;
+            if !runtime.starts_with(b"\0asm") {
+                anyhow::bail!(
+                    "Declared runtime {} is not valid WebAssembly",
+                    runtime_path.display()
+                );
+            }
+            Ok(runtime)
         }
     }
-    None
+}
+
+fn execution_workspace(shard: &Shard) -> Result<std::path::PathBuf> {
+    let base_dir = std::path::Path::new("./swarm-workspaces");
+    std::fs::create_dir_all(base_dir)?;
+    let canonical_base = base_dir.canonicalize()?;
+    let workspace = canonical_base
+        .join(shard.parent_task_id.to_string())
+        .join(shard.shard_index.to_string())
+        .join(uuid::Uuid::new_v4().to_string());
+    std::fs::create_dir_all(&workspace)?;
+
+    let canonical_workspace = workspace.canonicalize()?;
+    if !canonical_workspace.starts_with(&canonical_base) {
+        anyhow::bail!("Execution workspace escaped the configured workspace root");
+    }
+    Ok(canonical_workspace)
 }
 
 pub async fn run_worker(
@@ -57,6 +81,8 @@ pub async fn run_worker(
     }
 
     let connected_peers = Arc::new(DashSet::new());
+    let result_signing_key = SigningKey::from_bytes(&seed);
+    let result_public_key = result_signing_key.verifying_key().to_bytes().to_vec();
 
     let (worker_tx, mut worker_rx) = tokio::sync::mpsc::channel::<NodeCommand>(1000);
     let worker_tx_clone = worker_tx.clone();
@@ -84,6 +110,8 @@ pub async fn run_worker(
                             let _ = p2p_node.swarm.behaviour_mut().req_res.send_response(channel, SwarmResponse::Ack);
 
                             let tx_clone = worker_tx_clone.clone();
+                            let result_signing_key = result_signing_key.clone();
+                            let result_public_key = result_public_key.clone();
 
                             // PHASE 14: Spawn a dedicated task to handle execution and async file I/O
                             tokio::spawn(async move {
@@ -91,11 +119,23 @@ pub async fn run_worker(
 
                                     // 1. Cryptographic Verification
                                     let message_to_verify = format!("{}:{}", signed_payload.payload_json, signed_payload.expires_at);
-                                    let signature = Signature::from_bytes(signed_payload.signature.as_slice().try_into().unwrap_or(&[0u8; 64]));
-                                        if true {
-                                        if true { // BYPASS: Awaiting PKI Implementation
+                                    let signature_bytes: [u8; 64] = match signed_payload.signature.as_slice().try_into() {
+                                        Ok(bytes) => bytes,
+                                        Err(_) => {
+                                            eprintln!("🚨 SECURITY BREACH: Dispatch payload has an invalid signature length.");
+                                            return;
+                                        }
+                                    };
+                                    let signature = Signature::from_bytes(&signature_bytes);
+                                    if verifying_key
+                                        .verify(message_to_verify.as_bytes(), &signature)
+                                        .is_err()
+                                    {
+                                        eprintln!("🚨 SECURITY BREACH: Invalid dispatch signature from Gateway.");
+                                        return;
+                                    }
 
-                                            // 2. Expiration Check
+                                    // 2. Expiration Check
                                             let current_time = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
                                             if current_time > signed_payload.expires_at {
                                                 println!("⏳ REJECTED: Dispatch payload expired.");
@@ -106,46 +146,61 @@ pub async fn run_worker(
                                             if let Ok(shard_data) = serde_json::from_str::<Shard>(&signed_payload.payload_json) {
                                                 println!("⚙️ EXECUTING: Job {} | Shard {}/{}", shard_data.parent_task_id, shard_data.shard_index + 1, shard_data.total_shards);
 
-                                                // 4. Run the Sandbox/Judge
-                                                let mut hasher = sha2::Sha256::new();
-                                                hasher.update(&shard_data.wasm_image);
-                                                let contract_id = hex::encode(hasher.finalize());
-                                                let state_path = safe_state_path(&contract_id).unwrap_or_else(|| "./rootfs/data/default.state".to_string());
-
-                                                let mut judge = Judge::new(None).unwrap();
-                                                let (execution_result_code, execution_result_hash, _) = judge.execute(
-                                                    &shard_data.wasm_image,
-                                                    &shard_data.data,
-                                                    "POLYGLOT:WASM",
-                                                    &state_path
-                                                ).unwrap_or_else(|e| { println!("❌ JUDGE FATAL ERROR: {:?}", e); (-1, "ERROR".to_string(), None) });
-
-
-
-                                                // 5. PHASE 14: State Parsing & Delta Extraction (Tokio Async Law Enforced)
-                                                let mut state_delta: BTreeMap<String, String> = BTreeMap::new();
-
-                                                match fs::read_to_string(&state_path).await {
-                                                    Ok(contents) => {
-                                                        if contents.trim().is_empty() {
-                                                            println!("⚠️ WARNING: State file is empty for contract {}. Defaulting to empty state delta.", contract_id);
-                                                        } else {
-                                                            match serde_json::from_str::<BTreeMap<String, String>>(&contents) {
-                                                                Ok(parsed_delta) => {
-                                                                    state_delta = parsed_delta;
-                                                                    println!("📝 CAPTURED: {} state mutations.", state_delta.len());
-                                                                },
-                                                                Err(e) => {
-                                                                    println!("⚠️ WARNING: Failed to parse state JSON from contract {}. Error: {}. Defaulting to empty state delta.", contract_id, e);
-                                                                }
-                                                            }
-                                                        }
-                                                    },
+                                                // 4. Run the sandbox in a unique workspace and extract only its scoped state.
+                                                let workspace = match execution_workspace(&shard_data) {
+                                                    Ok(workspace) => workspace,
                                                     Err(e) => {
-                                                        // It is normal for stateless jobs to not produce a file, so we just log it as debug info
-                                                        println!("ℹ️ INFO: No state file found or readable for contract {} ({}). Returning empty delta.", contract_id, e);
+                                                        eprintln!("❌ Failed to create isolated workspace: {e}");
+                                                        return;
+                                                    }
+                                                };
+                                                let module_bytes = match runtime_module(&shard_data) {
+                                                    Ok(module) => module,
+                                                    Err(e) => {
+                                                        eprintln!("❌ Runtime resolution failed: {e}");
+                                                        let _ = std::fs::remove_dir_all(&workspace);
+                                                        return;
+                                                    }
+                                                };
+                                                let mut judge = match Judge::new(None) {
+                                                    Ok(judge) => judge,
+                                                    Err(e) => {
+                                                        eprintln!("❌ Failed to initialize Judge: {e}");
+                                                        let _ = std::fs::remove_dir_all(&workspace);
+                                                        return;
+                                                    }
+                                                };
+                                                let (execution_result_code, execution_result_hash, new_state) =
+                                                    match judge.execute(
+                                                        &module_bytes,
+                                                        &shard_data.data,
+                                                        shard_data.runtime.polyglot_id(),
+                                                        &workspace,
+                                                    ) {
+                                                        Ok(result) => result,
+                                                        Err(e) => {
+                                                            eprintln!("❌ JUDGE EXECUTION ERROR: {e}");
+                                                            (-1, "ERROR".to_string(), None)
+                                                        }
+                                                    };
+
+                                                // 5. Parse state only from this execution's isolated workspace.
+                                                let mut state_delta: BTreeMap<String, String> = BTreeMap::new();
+                                                if let Some(state_bytes) = new_state {
+                                                    match String::from_utf8(state_bytes)
+                                                        .ok()
+                                                        .and_then(|contents| serde_json::from_str::<BTreeMap<String, String>>(&contents).ok())
+                                                    {
+                                                        Some(parsed_delta) => {
+                                                            state_delta = parsed_delta;
+                                                            println!("📝 CAPTURED: {} state mutations.", state_delta.len());
+                                                        }
+                                                        None => {
+                                                            eprintln!("⚠️ WARNING: Ignoring non-JSON state emitted by isolated workspace.");
+                                                        }
                                                     }
                                                 }
+                                                let _ = std::fs::remove_dir_all(&workspace);
 
                                                 // 6. PHASE 14: Timestamping
                                                 let execution_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
@@ -160,10 +215,25 @@ pub async fn run_worker(
                                                     execution_timestamp
                                                 };
 
-                                                let req = match serde_json::to_string(&result_obj) {
+                                                let result_message = match shard_result_message(&result_obj) {
+                                                    Ok(message) => message,
+                                                    Err(e) => {
+                                                        eprintln!("⚠️ RESULT SERIALIZATION FAILED: {}", e);
+                                                        return;
+                                                    }
+                                                };
+                                                let signed_result = SignedShardResult {
+                                                    result: result_obj,
+                                                    worker_public_key: result_public_key,
+                                                    signature: result_signing_key
+                                                        .sign(&result_message)
+                                                        .to_bytes()
+                                                        .to_vec(),
+                                                };
+                                                let req = match serde_json::to_string(&signed_result) {
                                                     Ok(s) => SwarmRequest::SubmitResult(s),
                                                     Err(e) => {
-                                                        eprintln!("⚠️ JSON SERIALIZATION FAILED: {}", e);
+                                                        eprintln!("⚠️ SIGNED RESULT SERIALIZATION FAILED: {}", e);
                                                         return;
                                                     }
                                                 };
@@ -174,11 +244,7 @@ pub async fn run_worker(
                                                     println!("📤 TRANSMITTED: Result & State Delta sent to Gateway.");
                                                 }
                                             }
-                                        } else {
-                                            println!("🚨 SECURITY BREACH: Invalid payload signature from Gateway!");
-                                        }
                                     }
-                                }
                             });
                         }
                     },

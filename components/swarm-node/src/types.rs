@@ -1,6 +1,6 @@
 #![allow(clippy::type_complexity)]
 use dashmap::DashMap;
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -9,9 +9,48 @@ use synapse::SwarmRequest;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeKind {
+    Wasm,
+    Python,
+    JavaScript,
+    Lua,
+    Ruby,
+    Php,
+    Sqlite,
+}
+
+impl RuntimeKind {
+    pub fn polyglot_id(self) -> &'static str {
+        match self {
+            Self::Wasm => "POLYGLOT:WASM",
+            Self::Python => "POLYGLOT:PYTHON",
+            Self::JavaScript => "POLYGLOT:JS",
+            Self::Lua => "POLYGLOT:LUA",
+            Self::Ruby => "POLYGLOT:RUBY",
+            Self::Php => "POLYGLOT:PHP",
+            Self::Sqlite => "POLYGLOT:SQLITE",
+        }
+    }
+
+    pub fn runtime_file(self) -> Option<&'static str> {
+        match self {
+            Self::Wasm => None,
+            Self::Python => Some("python.wasm"),
+            Self::JavaScript => Some("qjs.wasm"),
+            Self::Lua => Some("lua.wasm"),
+            Self::Ruby => Some("ruby.wasm"),
+            Self::Php => Some("php.wasm"),
+            Self::Sqlite => Some("sqlite.wasm"),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ShardedDeployRequest {
     pub dataset: Vec<String>,
+    pub runtime: RuntimeKind,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -21,6 +60,7 @@ pub struct Shard {
     pub total_shards: u32,
     pub data: Vec<String>,
     pub wasm_image: Vec<u8>,
+    pub runtime: RuntimeKind,
     pub target_peer: Option<String>,
 }
 
@@ -32,6 +72,17 @@ pub struct ShardResult {
     pub result_hash: String,
     pub state_delta: BTreeMap<String, String>,
     pub execution_timestamp: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct SignedShardResult {
+    pub result: ShardResult,
+    pub worker_public_key: Vec<u8>,
+    pub signature: Vec<u8>,
+}
+
+pub fn shard_result_message(result: &ShardResult) -> serde_json::Result<Vec<u8>> {
+    serde_json::to_vec(result)
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -69,6 +120,7 @@ pub struct JobState {
     pub shards_data: HashMap<u32, Shard>,
     pub unassigned_dataset: Option<Vec<String>>,
     pub wasm_image: Vec<u8>,
+    pub runtime: RuntimeKind,
 }
 
 pub enum NodeCommand {
@@ -86,6 +138,8 @@ pub struct AppState {
     pub health_registry: Arc<DashMap<libp2p::PeerId, u8>>,
     pub pending_dials: Arc<DashMap<libp2p::PeerId, Instant>>,
     pub telemetry_registry: Arc<DashMap<libp2p::PeerId, Telemetry>>,
+    pub admission_key: VerifyingKey,
+    pub used_admission_nonces: Arc<DashMap<Uuid, Instant>>,
     pub signing_key: SigningKey,
 }
 

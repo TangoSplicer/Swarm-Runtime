@@ -7,19 +7,63 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use dashmap::DashMap;
-use ed25519_dalek::{Signer, SigningKey};
+use dashmap::{mapref::entry::Entry, DashMap};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use futures::StreamExt;
 use libp2p::{gossipsub, request_response, swarm::SwarmEvent};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use synapse::{SwarmRequest, SwarmResponse, SynapseBehaviorEvent, SynapseNode};
+use synapse::{
+    admission_message, AdmissionToken, SwarmRequest, SwarmResponse, SynapseBehaviorEvent,
+    SynapseNode,
+};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
+const ADMISSION_TOKEN_TTL_SECS: u64 = 300;
+
+fn is_supported_job_payload(runtime: RuntimeKind, payload: &[u8]) -> bool {
+    match runtime {
+        RuntimeKind::Wasm => payload.starts_with(b"\0asm"),
+        _ => payload.is_empty(),
+    }
+}
+
+fn validate_admission_token(
+    token: &AdmissionToken,
+    payload: &[u8],
+    metadata: &[u8],
+    admission_key: &VerifyingKey,
+    now: u64,
+) -> Result<(), &'static str> {
+    if token.expires_at <= now {
+        return Err("admission token has expired");
+    }
+    if token.expires_at > now.saturating_add(ADMISSION_TOKEN_TTL_SECS) {
+        return Err("admission token expiry exceeds the maximum lifetime");
+    }
+
+    let signature_bytes: [u8; 64] = token
+        .signature
+        .as_slice()
+        .try_into()
+        .map_err(|_| "admission token has an invalid signature length")?;
+    let signature = Signature::from_bytes(&signature_bytes);
+    admission_key
+        .verify(
+            &admission_message(payload, metadata, &token.nonce, token.expires_at),
+            &signature,
+        )
+        .map_err(|_| "admission token signature is invalid")
+}
+
+pub async fn run_gateway(
+    port: u16,
+    signing_key: SigningKey,
+    admission_key: VerifyingKey,
+) -> Result<()> {
     let mut p2p_node = SynapseNode::new(4000, signing_key.to_bytes()).await?;
     let _local_peer_id = *p2p_node.swarm.local_peer_id();
     p2p_node.subscribe("swarm-control-plane")?;
@@ -38,6 +82,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
     let telemetry_registry = Arc::new(DashMap::<libp2p::PeerId, Telemetry>::new());
 
     let contract_states = Arc::new(DashMap::<String, String>::new());
+    let used_admission_nonces = Arc::new(DashMap::<Uuid, Instant>::new());
 
     let shared_state = Arc::new(AppState {
         node_tx: tx.clone(),
@@ -46,6 +91,8 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
         health_registry: health_registry.clone(),
         pending_dials: pending_dials.clone(),
         telemetry_registry: telemetry_registry.clone(),
+        admission_key,
+        used_admission_nonces,
         signing_key: signing_key.clone(),
     });
 
@@ -98,7 +145,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
 
                                         peer_fitness.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-                                        let is_stateful = !job.wasm_image.is_empty() && job.wasm_image != b"NONE";
+                                        let is_stateful = job.runtime == RuntimeKind::Wasm && !job.wasm_image.is_empty();
 
                                         if is_stateful {
                                             job.expected_shards = 1;
@@ -107,9 +154,9 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                                             hasher.update(&job.wasm_image);
                                             let contract_key = hex::encode(hasher.finalize());
 
-                                            let mut out_wasm_image = job.wasm_image.clone();
-                                            if let Some(latest_state) = contract_states_c.get(&contract_key) {
-                                                let mut final_wasm = out_wasm_image.clone(); final_wasm.extend_from_slice(b"|STATE:"); final_wasm.extend_from_slice(latest_state.value().as_bytes()); out_wasm_image = final_wasm;
+                                            let out_wasm_image = job.wasm_image.clone();
+                                            if contract_states_c.contains_key(&contract_key) {
+                                                println!("ℹ️ Existing contract state will be provided through the isolated state file, not by mutating module bytes.");
                                             }
 
                                             let primary_peer = peer_fitness[0].0;
@@ -119,6 +166,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                                                 total_shards: 1,
                                                 data: dataset.clone(),
                                                 wasm_image: out_wasm_image,
+                                                runtime: job.runtime,
                                                 target_peer: Some(primary_peer.to_string()),
                                             };
 
@@ -158,6 +206,7 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                                                     total_shards: active_peers.len() as u32,
                                                     data: chunk.to_vec(),
                                                     wasm_image: job.wasm_image.clone(),
+                                                    runtime: job.runtime,
                                                     target_peer: Some(primary_peer.to_string()),
                                                 };
 
@@ -295,18 +344,73 @@ pub async fn run_gateway(port: u16, signing_key: SigningKey) -> Result<()> {
                                             // PHASE 14 & THE TOKIO ASYNC LAW:
                                             // Offloading strict lock operations to a dedicated spawned task prevents blocking the Libp2p loop
                                             tokio::spawn(async move {
-                                                if let Ok(res_data) = serde_json::from_str::<ShardResult>(&json_payload) {
-                                                    health_clone.remove(&peer);
+                                                if let Ok(signed_result) = serde_json::from_str::<SignedShardResult>(&json_payload) {
+                                                    let worker_key_bytes: [u8; 32] = match signed_result.worker_public_key.as_slice().try_into() {
+                                                        Ok(bytes) => bytes,
+                                                        Err(_) => {
+                                                            eprintln!("🚨 SECURITY BREACH: Result has an invalid worker public-key length.");
+                                                            return;
+                                                        }
+                                                    };
+                                                    let worker_key = match VerifyingKey::from_bytes(&worker_key_bytes) {
+                                                        Ok(key) => key,
+                                                        Err(_) => {
+                                                            eprintln!("🚨 SECURITY BREACH: Result has an invalid worker public key.");
+                                                            return;
+                                                        }
+                                                    };
+                                                    let signature_bytes: [u8; 64] = match signed_result.signature.as_slice().try_into() {
+                                                        Ok(bytes) => bytes,
+                                                        Err(_) => {
+                                                            eprintln!("🚨 SECURITY BREACH: Result has an invalid signature length.");
+                                                            return;
+                                                        }
+                                                    };
+                                                    let result_message = match shard_result_message(&signed_result.result) {
+                                                        Ok(message) => message,
+                                                        Err(e) => {
+                                                            eprintln!("⚠️ RESULT SERIALIZATION FAILED: {}", e);
+                                                            return;
+                                                        }
+                                                    };
+                                                    if worker_key
+                                                        .verify(&result_message, &Signature::from_bytes(&signature_bytes))
+                                                        .is_err()
+                                                    {
+                                                        eprintln!("🚨 SECURITY BREACH: Result signature verification failed.");
+                                                        return;
+                                                    }
 
-                                                    let job_arc_opt = jobs_clone.get(&res_data.job_id).map(|ref_val| ref_val.value().clone());
+                                                    let res_data = signed_result.result;
+                                                    let job_arc_opt = jobs_clone
+                                                        .get(&res_data.job_id)
+                                                        .map(|ref_val| ref_val.value().clone());
 
                                                     if let Some(job_arc) = job_arc_opt {
                                                         let mut guard = job_arc.lock().await;
+
+                                                        let is_assigned_peer = guard
+                                                            .assignments
+                                                            .get(&res_data.shard_index)
+                                                            .is_some_and(|peers| peers.contains_key(&peer));
+                                                        if !is_assigned_peer {
+                                                            eprintln!(
+                                                                "🚨 SECURITY BREACH: Rejected result for shard {} from unassigned peer {}.",
+                                                                res_data.shard_index, peer
+                                                            );
+                                                            return;
+                                                        }
+
+                                                        health_clone.remove(&peer);
 
                                                         if guard.verified_results.contains_key(&res_data.shard_index) { return; }
 
                                                         let is_consensus_ready = {
                                                             let shard_results = guard.raw_results.entry(res_data.shard_index).or_insert_with(HashMap::new);
+                                                            if shard_results.contains_key(&peer) {
+                                                                eprintln!("🚨 SECURITY BREACH: Ignoring duplicate result from peer {} for shard {}.", peer, res_data.shard_index);
+                                                                return;
+                                                            }
                                                             shard_results.insert(peer, (res_data.result, res_data.result_hash.clone(), res_data.state_delta.clone(), res_data.execution_timestamp));
 
                                                             let display_hash = if res_data.result_hash.len() >= 8 { &res_data.result_hash[..8] } else { &res_data.result_hash };
@@ -445,7 +549,8 @@ async fn submit_job(
 ) -> (StatusCode, Json<JobSubmitResponse>) {
     let task_id = Uuid::new_v4();
     let mut wasm_bytes = Vec::new();
-    let mut dataset = Vec::new();
+    let mut metadata_bytes = Vec::new();
+    let mut admission_token = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
@@ -455,12 +560,105 @@ async fn submit_job(
             }
         } else if name == "metadata" {
             if let Ok(data) = field.bytes().await {
-                let text = String::from_utf8_lossy(&data);
-                if let Ok(payload) = serde_json::from_str::<ShardedDeployRequest>(&text) {
-                    dataset = payload.dataset;
-                }
+                metadata_bytes = data.to_vec();
+            }
+        } else if name == "admission" {
+            if let Ok(data) = field.bytes().await {
+                admission_token = serde_json::from_slice::<AdmissionToken>(&data).ok();
             }
         }
+    }
+
+    if wasm_bytes.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(JobSubmitResponse {
+                job_id: String::new(),
+                status: "invalid_request: missing wasm payload".to_string(),
+            }),
+        );
+    }
+
+    let deployment = match serde_json::from_slice::<ShardedDeployRequest>(&metadata_bytes) {
+        Ok(payload) if !payload.dataset.is_empty() => payload,
+        Ok(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(JobSubmitResponse {
+                    job_id: String::new(),
+                    status: "invalid_request: missing dataset".to_string(),
+                }),
+            );
+        }
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(JobSubmitResponse {
+                    job_id: String::new(),
+                    status: "invalid_request: invalid or missing metadata".to_string(),
+                }),
+            );
+        }
+    };
+
+    let token = match admission_token {
+        Some(token) => token,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(JobSubmitResponse {
+                    job_id: String::new(),
+                    status: "unauthorized: missing or malformed admission token".to_string(),
+                }),
+            );
+        }
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    if let Err(message) = validate_admission_token(
+        &token,
+        &wasm_bytes,
+        &metadata_bytes,
+        &state.admission_key,
+        now,
+    ) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(JobSubmitResponse {
+                job_id: String::new(),
+                status: format!("unauthorized: {message}"),
+            }),
+        );
+    }
+
+    state.used_admission_nonces.retain(|_, created_at| {
+        created_at.elapsed() < Duration::from_secs(ADMISSION_TOKEN_TTL_SECS)
+    });
+    match state.used_admission_nonces.entry(token.nonce) {
+        Entry::Occupied(_) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(JobSubmitResponse {
+                    job_id: String::new(),
+                    status: "conflict: admission token has already been used".to_string(),
+                }),
+            );
+        }
+        Entry::Vacant(entry) => {
+            entry.insert(Instant::now());
+        }
+    }
+
+    if !is_supported_job_payload(deployment.runtime, &wasm_bytes) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(JobSubmitResponse {
+                job_id: String::new(),
+                status: "invalid_request: wasm jobs require a Wasm module; polyglot jobs must use the declared runtime with source in metadata".to_string(),
+            }),
+        );
     }
 
     let job_state = JobState {
@@ -472,8 +670,9 @@ async fn submit_job(
         created_at: Instant::now(),
         assignments: HashMap::new(),
         shards_data: HashMap::new(),
-        unassigned_dataset: Some(dataset.clone()),
+        unassigned_dataset: Some(deployment.dataset.clone()),
         wasm_image: wasm_bytes,
+        runtime: deployment.runtime,
     };
 
     state.jobs.insert(task_id, Arc::new(Mutex::new(job_state)));
@@ -481,7 +680,7 @@ async fn submit_job(
     println!(
         "📥 Job Queued: {} with {} Complex Items",
         task_id,
-        dataset.len()
+        deployment.dataset.len()
     );
 
     (
@@ -603,5 +802,108 @@ async fn fetch_data(
     match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
         Ok(Ok(Some(bytes))) => (StatusCode::OK, bytes),
         _ => (StatusCode::NOT_FOUND, b"File not found on network".to_vec()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_supported_job_payload, validate_admission_token};
+    use crate::types::RuntimeKind;
+    use ed25519_dalek::{Signer, SigningKey};
+    use synapse::{admission_message, AdmissionToken};
+    use uuid::Uuid;
+
+    fn signed_admission_token(
+        signing_key: &SigningKey,
+        payload: &[u8],
+        metadata: &[u8],
+        expires_at: u64,
+    ) -> AdmissionToken {
+        let nonce = Uuid::new_v4();
+        let signature = signing_key.sign(&admission_message(payload, metadata, &nonce, expires_at));
+        AdmissionToken {
+            nonce,
+            expires_at,
+            signature: signature.to_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn accepts_runtime_specific_payloads() {
+        assert!(is_supported_job_payload(
+            RuntimeKind::Wasm,
+            b"\0asm\x01\0\0\0"
+        ));
+        assert!(is_supported_job_payload(RuntimeKind::Python, b""));
+        assert!(is_supported_job_payload(RuntimeKind::Sqlite, b""));
+    }
+
+    #[test]
+    fn rejects_payloads_for_the_wrong_runtime() {
+        assert!(!is_supported_job_payload(RuntimeKind::Wasm, b""));
+        assert!(!is_supported_job_payload(
+            RuntimeKind::Python,
+            b"\0asm\x01\0\0\0"
+        ));
+        assert!(!is_supported_job_payload(
+            RuntimeKind::JavaScript,
+            b"source marker"
+        ));
+    }
+
+    #[test]
+    fn validates_fresh_signed_admission_tokens() {
+        let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+        let payload = b"\0asm\x01\0\0\0";
+        let metadata = br#"{\"dataset\":[\"trusted workload\"]}"#;
+        let now = 1_000_u64;
+        let token = signed_admission_token(&signing_key, payload, metadata, now + 60);
+
+        assert!(validate_admission_token(
+            &token,
+            payload,
+            metadata,
+            &signing_key.verifying_key(),
+            now,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn rejects_expired_overlong_and_altered_admission_tokens() {
+        let signing_key = SigningKey::from_bytes(&[9_u8; 32]);
+        let payload = b"\0asm\x01\0\0\0";
+        let metadata = br#"{\"dataset\":[\"trusted workload\"]}"#;
+        let now = 1_000_u64;
+
+        let expired = signed_admission_token(&signing_key, payload, metadata, now);
+        assert!(validate_admission_token(
+            &expired,
+            payload,
+            metadata,
+            &signing_key.verifying_key(),
+            now,
+        )
+        .is_err());
+
+        let overlong = signed_admission_token(&signing_key, payload, metadata, now + 301);
+        assert!(validate_admission_token(
+            &overlong,
+            payload,
+            metadata,
+            &signing_key.verifying_key(),
+            now,
+        )
+        .is_err());
+
+        let valid = signed_admission_token(&signing_key, payload, metadata, now + 60);
+        assert!(validate_admission_token(
+            &valid,
+            b"different payload",
+            metadata,
+            &signing_key.verifying_key(),
+            now,
+        )
+        .is_err());
     }
 }

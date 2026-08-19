@@ -54,9 +54,7 @@ async fn test_cellular_packet_loss_bft_sync() -> Result<()> {
         }
     };
 
-    worker_swarm
-        .behaviour_mut()
-        .add_address(&gateway_peer, gateway_addr);
+    worker_swarm.add_peer_address(gateway_peer, gateway_addr);
     let expected_request_id = worker_swarm.behaviour_mut().send_request(
         &gateway_peer,
         SwarmRequest::FetchData("BFT_SYNC".to_string()),

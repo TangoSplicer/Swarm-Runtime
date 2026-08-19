@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use synapse::{admission_message, AdmissionToken};
+use uuid::Uuid;
 
 #[derive(Parser)]
 #[command(name = "swarm")]
@@ -34,6 +37,10 @@ enum Commands {
         /// The Gateway URL
         #[arg(long, default_value = "http://127.0.0.1:3000")]
         gateway: String,
+
+        /// Path to the 32-byte Ed25519 private key authorized to submit jobs
+        #[arg(long)]
+        admission_private_key: String,
     },
     /// Check the status and output of a deployed job
     Status {
@@ -47,9 +54,21 @@ enum Commands {
 }
 
 #[derive(Serialize)]
-struct DeployPayload {
-    wasm_base64: String,
+struct DeployMetadata {
     dataset: Vec<String>,
+    runtime: RuntimeKind,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RuntimeKind {
+    Wasm,
+    Python,
+    JavaScript,
+    Lua,
+    Ruby,
+    Php,
+    Sqlite,
 }
 
 #[derive(Deserialize, Debug)]
@@ -59,6 +78,15 @@ struct JobStatusResponse {
     breakdown: Vec<(u32, i32)>,
     hashes: Vec<(u32, String)>,
     missing_shards: Vec<u32>,
+}
+
+fn load_admission_signing_key(path: &str) -> Result<SigningKey> {
+    let key_bytes =
+        fs::read(path).with_context(|| format!("Failed to read admission private key: {path}"))?;
+    let key_bytes: [u8; 32] = key_bytes.try_into().map_err(|_| {
+        anyhow::anyhow!("Admission private key at {path} must contain exactly 32 bytes")
+    })?;
+    Ok(SigningKey::from_bytes(&key_bytes))
 }
 
 #[tokio::main]
@@ -71,10 +99,12 @@ async fn main() -> Result<()> {
             file,
             lang,
             gateway,
+            admission_private_key,
         } => {
+            let admission_signing_key = load_admission_signing_key(admission_private_key)?;
             println!("🚀 Preparing deployment for: {}", file);
 
-            let (wasm_base64, dataset) = match lang.to_lowercase().as_str() {
+            let (wasm_bytes, dataset, runtime) = match lang.to_lowercase().as_str() {
                                                 "zig" => {
                     println!("⚙️  Locally compiling Zig source natively to WASIp1...");
                     let temp_wasm = format!("{}.wasm", file.replace(".zig", "").replace("/", "_"));
@@ -97,16 +127,20 @@ async fn main() -> Result<()> {
                     let _ = std::fs::remove_file(&temp_wasm); // Cleanup binary
                     let _ = std::fs::remove_file(format!("{}.o", temp_wasm)); // Cleanup object file
 
-                    use base64::{Engine as _, engine::general_purpose};
-                    let encoded = general_purpose::STANDARD.encode(&wasm_bytes);
-                    (encoded, vec!["EXECUTE_NATIVE_WASM".to_string()])
+                    (
+                        wasm_bytes,
+                        vec!["EXECUTE_NATIVE_WASM".to_string()],
+                        RuntimeKind::Wasm,
+                    )
                 },
                 "wasm" => {
                     println!("⚙️  Reading raw WebAssembly binary...");
                     let wasm_bytes = fs::read(file).context("Failed to read .wasm file")?;
-                    use base64::{Engine as _, engine::general_purpose};
-                    let encoded = general_purpose::STANDARD.encode(&wasm_bytes);
-                    (encoded, vec!["EXECUTE_NATIVE_WASM".to_string()])
+                    (
+                        wasm_bytes,
+                        vec!["EXECUTE_NATIVE_WASM".to_string()],
+                        RuntimeKind::Wasm,
+                    )
                 },
                 "go" => {
                     println!("⚙️  Locally compiling Go source natively to WASIp1...");
@@ -125,39 +159,67 @@ async fn main() -> Result<()> {
                     let wasm_bytes = fs::read(&temp_wasm).context("Failed to read compiled wasm")?;
                     let _ = fs::remove_file(&temp_wasm); // Cleanup
 
-                    use base64::{Engine as _, engine::general_purpose};
-                    let encoded = general_purpose::STANDARD.encode(&wasm_bytes);
-                    (encoded, vec!["EXECUTE_NATIVE_WASM".to_string()])
+                    (
+                        wasm_bytes,
+                        vec!["EXECUTE_NATIVE_WASM".to_string()],
+                        RuntimeKind::Wasm,
+                    )
                 },
                 "python" | "js" | "javascript" | "lua" | "ruby" | "rb" | "php" | "sqlite" | "sql" => {
                     let code = fs::read_to_string(file)
                         .with_context(|| format!("Failed to read file: {}", file))?;
 
-                    let identifier = match lang.to_lowercase().as_str() {
-                        "python" => "POLYGLOT:PYTHON",
-                        "js" | "javascript" => "POLYGLOT:JS",
-                        "lua" => "POLYGLOT:LUA",
-                        "ruby" | "rb" => "POLYGLOT:RUBY",
-                        "php" => "POLYGLOT:PHP",
-                        "sqlite" | "sql" => "POLYGLOT:SQLITE",
+                    let runtime = match lang.to_lowercase().as_str() {
+                        "python" => RuntimeKind::Python,
+                        "js" | "javascript" => RuntimeKind::JavaScript,
+                        "lua" => RuntimeKind::Lua,
+                        "ruby" | "rb" => RuntimeKind::Ruby,
+                        "php" => RuntimeKind::Php,
+                        "sqlite" | "sql" => RuntimeKind::Sqlite,
                         _ => unreachable!(),
                     };
-                    (identifier.to_string(), vec![code])
+                    (Vec::new(), vec![code], runtime)
                 },
                 _ => anyhow::bail!("Unsupported language: {}. Currently supported: python, js, lua, ruby, php, sqlite, go, wasm, zig", lang),
             };
 
-            let payload = DeployPayload {
-                wasm_base64,
-                dataset,
-            };
+            let metadata_json = serde_json::to_string(&DeployMetadata { dataset, runtime })?;
+            let expires_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0)
+                + 300;
+            let nonce = Uuid::new_v4();
+            let signature = admission_signing_key.sign(&admission_message(
+                &wasm_bytes,
+                metadata_json.as_bytes(),
+                &nonce,
+                expires_at,
+            ));
+            let admission_json = serde_json::to_string(&AdmissionToken {
+                nonce,
+                expires_at,
+                signature: signature.to_bytes().to_vec(),
+            })?;
+
+            let wasm_part = reqwest::multipart::Part::bytes(wasm_bytes)
+                .file_name(file.clone())
+                .mime_str("application/wasm")?;
+            let metadata_part =
+                reqwest::multipart::Part::text(metadata_json).mime_str("application/json")?;
+            let admission_part =
+                reqwest::multipart::Part::text(admission_json).mime_str("application/json")?;
+            let form = reqwest::multipart::Form::new()
+                .part("wasm", wasm_part)
+                .part("metadata", metadata_part)
+                .part("admission", admission_part);
 
             let url = format!("{}/api/v1/jobs", gateway.trim_end_matches('/'));
             println!("📡 Dispatching payload to Gateway at {}...", url);
 
             let res = client
                 .post(&url)
-                .json(&payload)
+                .multipart(form)
                 .send()
                 .await
                 .context("Failed to connect to the Swarm Gateway.")?;
@@ -183,7 +245,8 @@ async fn main() -> Result<()> {
                 Ok(response) => {
                     if response.status().is_success() {
                         if let Ok(bytes) = response.bytes().await {
-                            let filename = format!("download_{}.bin", &hash[..8]);
+                            let filename =
+                                format!("download_{}.bin", hash.get(..8).unwrap_or(hash.as_str()));
                             if std::fs::write(&filename, &bytes).is_ok() {
                                 println!("✅ Success! File downloaded to: {}", filename);
                             } else {

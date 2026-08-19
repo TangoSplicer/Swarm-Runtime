@@ -4,7 +4,27 @@ use libp2p::{
     StreamProtocol, Swarm,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::time::Duration;
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdmissionToken {
+    pub nonce: Uuid,
+    pub expires_at: u64,
+    pub signature: Vec<u8>,
+}
+
+pub fn admission_message(
+    payload: &[u8],
+    metadata: &[u8],
+    nonce: &Uuid,
+    expires_at: u64,
+) -> Vec<u8> {
+    let payload_hash = hex::encode(Sha256::digest(payload));
+    let metadata_hash = hex::encode(Sha256::digest(metadata));
+    format!("SWARM_ADMISSION_V1:{payload_hash}:{metadata_hash}:{nonce}:{expires_at}").into_bytes()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SwarmRequest {

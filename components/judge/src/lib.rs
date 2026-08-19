@@ -1,21 +1,38 @@
 use anyhow::{anyhow, Result};
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::path::{Path, PathBuf};
 use wasmi::*;
 use wasmi_wasi::WasiCtxBuilder;
+
+const DEFAULT_FUEL_LIMIT: u64 = 50_000_000;
+const MAX_MODULE_BYTES: usize = 25 * 1024 * 1024;
+const MAX_DATASET_BYTES: usize = 5 * 1024 * 1024;
+const MAX_STATE_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_OUTPUT_BYTES: u64 = 5 * 1024 * 1024;
 
 pub struct Judge {
     engine: Engine,
     linker: Linker<wasmi_wasi::WasiCtx>,
+    fuel_limit: u64,
 }
 
 impl Judge {
-    pub fn new(_gas_limit: Option<u64>) -> Result<Self> {
+    pub fn new(gas_limit: Option<u64>) -> Result<Self> {
+        let fuel_limit = gas_limit.unwrap_or(DEFAULT_FUEL_LIMIT);
+        if fuel_limit == 0 {
+            return Err(anyhow!("Execution fuel limit must be greater than zero"));
+        }
+
         let mut config = Config::default();
         config.consume_fuel(true);
         let engine = Engine::new(&config);
         let linker = <Linker<wasmi_wasi::WasiCtx>>::new(&engine);
-        Ok(Self { engine, linker })
+        Ok(Self {
+            engine,
+            linker,
+            fuel_limit,
+        })
     }
 
     pub fn execute(
@@ -23,130 +40,206 @@ impl Judge {
         wasm_bytes: &[u8],
         dataset: &[String],
         polyglot_id: &str,
-        state_path: &str,
+        workspace_dir: &Path,
     ) -> Result<(i32, String, Option<Vec<u8>>)> {
-        let sandbox_dir = "./rootfs/data";
-        fs::create_dir_all(sandbox_dir).map_err(|e| anyhow!("Failed to create data dir: {}", e))?;
-        fs::create_dir_all("./rootfs/lib").unwrap_or_default();
+        if wasm_bytes.len() > MAX_MODULE_BYTES {
+            return Err(anyhow!(
+                "WebAssembly module exceeds the {} byte execution limit",
+                MAX_MODULE_BYTES
+            ));
+        }
+
+        let dataset_size = dataset_size(dataset)?;
+        if dataset_size > MAX_DATASET_BYTES {
+            return Err(anyhow!(
+                "Dataset exceeds the {} byte execution limit",
+                MAX_DATASET_BYTES
+            ));
+        }
+
+        let data_dir = workspace_dir.join("data");
+        fs::create_dir_all(&data_dir)
+            .map_err(|e| anyhow!("Failed to create isolated workspace: {e}"))?;
 
         let module = Module::new(&self.engine, wasm_bytes)
-            .map_err(|e| anyhow!("Module compilation error: {}", e))?;
-        let is_wasi_start = module.exports().any(|e| e.name() == "_start");
-
-        // PHASE 13: Strict WASI Enforcement. Legacy memory injection mode has been eradicated.
-        if !is_wasi_start {
+            .map_err(|e| anyhow!("Module compilation error: {e}"))?;
+        if !module.exports().any(|export| export.name() == "_start") {
             return Err(anyhow!(
                 "No valid WASI _start entry point found. Legacy mode is deprecated."
             ));
         }
 
         let joined_dataset = dataset.join("\n");
-        let mut wasi_args: Vec<String> = vec!["swarm-wasm".to_string()];
-        let mut target_file = "app.txt";
+        let (target_file, wasi_args) = wasi_invocation(polyglot_id, dataset);
+        let app_path = data_dir.join(target_file);
+        fs::write(&app_path, joined_dataset)
+            .map_err(|e| anyhow!("Failed to write isolated script input: {e}"))?;
 
-        if polyglot_id == "POLYGLOT:PYTHON" {
-            target_file = "app.py";
-            wasi_args = vec![
-                "python".to_string(),
-                "-B".to_string(),
-                "-S".to_string(),
-                "/data/app.py".to_string(),
-            ];
-        } else if polyglot_id == "POLYGLOT:JS" {
-            target_file = "app.js";
-            wasi_args = vec!["qjs".to_string(), "/data/app.js".to_string()];
-        } else if polyglot_id == "POLYGLOT:LUA" {
-            target_file = "app.lua";
-            wasi_args = vec!["lua".to_string(), "/data/app.lua".to_string()];
-        } else if polyglot_id == "POLYGLOT:RUBY" {
-            target_file = "app.rb";
-            wasi_args = vec!["ruby".to_string(), "/data/app.rb".to_string()];
-        } else if polyglot_id == "POLYGLOT:PHP" {
-            target_file = "app.php";
-            wasi_args = vec!["php".to_string(), "/data/app.php".to_string()];
-        } else if polyglot_id == "POLYGLOT:SQLITE" {
-            target_file = "app.sql";
-            wasi_args = vec![
-                "sqlite3".to_string(),
-                "/data/swarm.db".to_string(),
-                ".read /data/app.sql".to_string(),
-            ];
-        } else {
-            // Inject the JSON dataset directly into the WASI arguments for raw WebAssembly
-            wasi_args.extend_from_slice(dataset);
-        }
-
-        let app_path = format!("{}/{}", sandbox_dir, target_file);
-        fs::write(&app_path, &joined_dataset)
-            .map_err(|e| anyhow!("Failed to write script: {}", e))?;
-
-        // Open the secure ambient directory mapping the host's ./rootfs to the guest's /
-        let root_dir = cap_std::fs::Dir::open_ambient_dir("./rootfs", cap_std::ambient_authority())
-            .map_err(|e| anyhow!("Failed to open rootfs dir: {}", e))?;
-
-        // Derive the absolute path for the guest by stripping the host's relative mount point
-        let guest_state_path = state_path.replace("./rootfs", "");
+        let root_dir =
+            cap_std::fs::Dir::open_ambient_dir(workspace_dir, cap_std::ambient_authority())
+                .map_err(|e| anyhow!("Failed to open isolated workspace: {e}"))?;
+        let guest_state_path = "/data/state.json";
 
         let mut builder = WasiCtxBuilder::new()
             .inherit_stdout()
             .inherit_stderr()
             .args(&wasi_args)
-            .map_err(|e| anyhow!("WASI args error: {}", e))?
-            .env("SWARM_STATE_FILE", &guest_state_path)
-            .map_err(|e| anyhow!("WASI env error: {}", e))?;
+            .map_err(|e| anyhow!("WASI args error: {e}"))?
+            .env("SWARM_STATE_FILE", guest_state_path)
+            .map_err(|e| anyhow!("WASI env error: {e}"))?;
 
         if polyglot_id == "POLYGLOT:PYTHON" {
             builder = builder
                 .env("PYTHONPATH", "/python-wasi.zip")
-                .map_err(|e| anyhow!("Env error: {}", e))?
+                .map_err(|e| anyhow!("WASI environment error: {e}"))?
                 .env("PYTHONHOME", "/")
-                .map_err(|e| anyhow!("Env error: {}", e))?;
+                .map_err(|e| anyhow!("WASI environment error: {e}"))?;
         }
 
         let wasi_ctx = builder
             .preopened_dir(root_dir, "/")
-            .map_err(|e| anyhow!("WASI preopened_dir error: {}", e))?
+            .map_err(|e| anyhow!("WASI preopened_dir error: {e}"))?
             .build();
 
         let mut store = Store::new(&self.engine, wasi_ctx);
         store
-            .add_fuel(50_000_000_000)
-            .map_err(|e| anyhow!("Fuel error: {}", e))?;
+            .add_fuel(self.fuel_limit)
+            .map_err(|e| anyhow!("Fuel error: {e}"))?;
 
         let mut linker = self.linker.clone();
         wasmi_wasi::add_to_linker(&mut linker, |ctx| ctx)
-            .map_err(|e| anyhow!("WASI link error: {}", e))?;
+            .map_err(|e| anyhow!("WASI link error: {e}"))?;
 
         let instance = linker
             .instantiate(&mut store, &module)
-            .map_err(|e| anyhow!("WASI Instantiate error: {}", e))?
+            .map_err(|e| anyhow!("WASI instantiate error: {e}"))?
             .start(&mut store)
-            .map_err(|e| anyhow!("WASI Start error: {}", e))?;
+            .map_err(|e| anyhow!("WASI start error: {e}"))?;
 
-        // Strictly enforce WASI _start execution
         let start_func = instance
             .get_typed_func::<(), ()>(&store, "_start")
-            .map_err(|e| anyhow!("Export error: {}", e))?;
+            .map_err(|e| anyhow!("WASI _start export error: {e}"))?;
         start_func
             .call(&mut store, ())
-            .unwrap_or_else(|_| println!("Execution trap caught (normal for WASI exit)."));
+            .map_err(|e| anyhow!("WASI execution trapped: {e}"))?;
 
-        // --- PHASE 7: STATE EXTRACTION (V2 - Strict WASI POSIX File I/O) ---
-        // We no longer blindly dump the WASM linear memory.
-        // We dynamically read the state file directly from the host filesystem.
-        let new_state = fs::read(state_path).ok();
+        let state_path = workspace_state_path(workspace_dir);
+        if let Ok(metadata) = fs::metadata(&state_path) {
+            if metadata.len() > MAX_STATE_BYTES {
+                return Err(anyhow!(
+                    "Execution state exceeds the {} byte limit",
+                    MAX_STATE_BYTES
+                ));
+            }
+        }
+        let new_state = fs::read(&state_path).ok();
+        let output_path = data_dir.join("output.txt");
+        if let Ok(metadata) = fs::metadata(&output_path) {
+            if metadata.len() > MAX_OUTPUT_BYTES {
+                return Err(anyhow!(
+                    "Execution output exceeds the {} byte limit",
+                    MAX_OUTPUT_BYTES
+                ));
+            }
+        }
 
         let mut hasher = Sha256::new();
-        let output_path = format!("{}/output.txt", sandbox_dir);
         if let Ok(content) = fs::read(&output_path) {
             hasher.update(&content);
         } else {
             hasher.update(b"NO_OUTPUT_FOUND");
         }
 
-        // Standardized result code for WASI execution
-        let result_code = 0;
+        Ok((0, format!("{:x}", hasher.finalize()), new_state))
+    }
+}
 
-        Ok((result_code, format!("{:x}", hasher.finalize()), new_state))
+pub fn workspace_state_path(workspace_dir: &Path) -> PathBuf {
+    workspace_dir.join("data").join("state.json")
+}
+
+fn dataset_size(dataset: &[String]) -> Result<usize> {
+    dataset.iter().try_fold(0_usize, |size, item| {
+        size.checked_add(item.len())
+            .and_then(|size| size.checked_add(1))
+            .ok_or_else(|| anyhow!("Dataset size overflow"))
+    })
+}
+
+fn wasi_invocation(polyglot_id: &str, dataset: &[String]) -> (&'static str, Vec<String>) {
+    match polyglot_id {
+        "POLYGLOT:PYTHON" => (
+            "app.py",
+            vec![
+                "python".to_string(),
+                "-B".to_string(),
+                "-S".to_string(),
+                "/data/app.py".to_string(),
+            ],
+        ),
+        "POLYGLOT:JS" => (
+            "app.js",
+            vec!["qjs".to_string(), "/data/app.js".to_string()],
+        ),
+        "POLYGLOT:LUA" => (
+            "app.lua",
+            vec!["lua".to_string(), "/data/app.lua".to_string()],
+        ),
+        "POLYGLOT:RUBY" => (
+            "app.rb",
+            vec!["ruby".to_string(), "/data/app.rb".to_string()],
+        ),
+        "POLYGLOT:PHP" => (
+            "app.php",
+            vec!["php".to_string(), "/data/app.php".to_string()],
+        ),
+        "POLYGLOT:SQLITE" => (
+            "app.sql",
+            vec![
+                "sqlite3".to_string(),
+                "/data/swarm.db".to_string(),
+                ".read /data/app.sql".to_string(),
+            ],
+        ),
+        _ => {
+            let mut args = vec!["swarm-wasm".to_string()];
+            args.extend_from_slice(dataset);
+            ("app.txt", args)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_fuel_limit_is_bounded() {
+        let judge = Judge::new(None).expect("the default fuel limit must be valid");
+        assert_eq!(judge.fuel_limit, DEFAULT_FUEL_LIMIT);
+        assert!(judge.fuel_limit < 50_000_000_000);
+    }
+
+    #[test]
+    fn zero_fuel_limit_is_rejected() {
+        assert!(Judge::new(Some(0)).is_err());
+    }
+
+    #[test]
+    fn dataset_limit_accounts_for_all_items() {
+        assert_eq!(
+            dataset_size(&["abc".to_string(), "de".to_string()]).unwrap(),
+            7
+        );
+        assert!(dataset_size(&["x".repeat(MAX_DATASET_BYTES)]).unwrap() > MAX_DATASET_BYTES);
+    }
+
+    #[test]
+    fn state_path_is_scoped_to_workspace() {
+        let workspace = Path::new("/tmp/swarm-workspaces/job-a");
+        assert_eq!(
+            workspace_state_path(workspace),
+            Path::new("/tmp/swarm-workspaces/job-a/data/state.json")
+        );
     }
 }

@@ -19,10 +19,10 @@ clap = { version = "4.3", features = ["derive"] }
 sled = "0.34"
 
 # Networking (Must match Synapse version)
-libp2p = { version = "0.53.0", features = ["gossipsub", "mdns", "macros", "tokio"] }
+libp2p = { version = "0.53.0", default-features = false, features = ["gossipsub", "macros", "tokio", "tcp", "noise", "yamux", "kad", "identify", "request-response", "cbor"] }
 
 # Web Server
-axum = { version = "0.6", features = ["macros", "multipart"] }
+axum = { version = "0.6", default-features = false, features = ["http1", "json", "macros", "multipart", "tokio"] }
 
 # Internal Components
 synapse = { path = "../synapse" }
