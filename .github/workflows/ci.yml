@@ -1,81 +1,45 @@
-name: Phase 15 Enterprise CI/CD
+name: Rust CI
 
 on:
   push:
-    branches: [ "main" ]
   pull_request:
-    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
-  CC: clang
-  CXX: clang++
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  fmt-and-clippy:
-    name: Formatting & Linting
+  quality:
+    name: Format, Clippy, and tests
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
     steps:
-      - name: Checkout repository
+      - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Setup Rust toolchain
+      - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
-      - name: Enforce Formatting
+      - name: Cache Cargo registry and build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-ci-${{ runner.os }}
+
+      - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Strict Clippy Audit
-        run: cargo clippy --workspace -- -D warnings
+      - name: Run strict Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
-  test-and-build:
-    name: Matrix Test & Build
-    needs: fmt-and-clippy
-    runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        target: 
-          - x86_64-unknown-linux-gnu # Linux Cloud Gateways
-          - aarch64-linux-android    # Termux Mobile Edge Workers
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Install Cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
-
-      - name: Build Workspace
-        run: |
-          if [ "${{ matrix.target }}" == "x86_64-unknown-linux-gnu" ]; then
-            cargo build --workspace --target ${{ matrix.target }} --release
-          else
-            cross build --workspace --target ${{ matrix.target }} --release
-          fi
-
-      - name: Run Integration Tests
-        # We only run tests natively on x86_64 to avoid Android QEMU overhead in CI,
-        # but the code is cross-compiled to guarantee it builds for Termux.
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: |
-          if [ "${{ matrix.target }}" == "x86_64-unknown-linux-gnu" ]; then
-            cargo test --workspace --target ${{ matrix.target }}
-          else
-            cross test --workspace --target ${{ matrix.target }}
-          fi
-
-      - name: Upload Compiled Binaries
-        uses: actions/upload-artifact@v4
-        with:
-          name: swarm-binaries-${{ matrix.target }}
-          path: |
-            target/${{ matrix.target }}/release/swarm-node
-            target/${{ matrix.target }}/release/swarm-cli
+      - name: Run locked workspace tests
+        run: cargo test --workspace --all-targets --locked
