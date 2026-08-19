@@ -4,6 +4,8 @@
 [![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange)](https://www.rust-lang.org/)
 [![Termux](https://img.shields.io/badge/Platform-Android%20%2F%20Termux-green)](https://termux.dev/)
 [![Status](https://img.shields.io/badge/Status-Hardened%20main-blue)](https://github.com/TangoSplicer/Swarm-Runtime)
+[![Rust CI](https://github.com/TangoSplicer/Swarm-Runtime/actions/workflows/ci.yml/badge.svg)](https://github.com/TangoSplicer/Swarm-Runtime/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/TangoSplicer/Swarm-Runtime/branch/main/graph/badge.svg)](https://app.codecov.io/gh/TangoSplicer/Swarm-Runtime)
 
 Swarm Runtime turns Android devices into a fault-tolerant compute cluster. It uses **Libp2p** for mesh networking, **Axum** for a REST API, and the **Wasmi** interpreter for ARM64-safe WASI execution. The current `main` branch requires signed job admission and verifies signed worker results before consensus processing.
 
@@ -25,7 +27,7 @@ The gateway accepts a job only when the request includes a short-lived **Ed25519
 
 Each shard runs in a newly created workspace under `./swarm-workspaces`; the WASI guest receives only that workspace as a preopened directory. The executor limits module size, dataset, state, output, and fuel consumption. Runtime selection is explicit in signed deployment metadata: raw Wasm workloads submit a module, while Python, JavaScript, Lua, Ruby, PHP, and SQLite workloads resolve a reviewed local Wasm runtime from `./runtimes`.
 
-Read [SECURITY_OPERATIONS.md](SECURITY_OPERATIONS.md) before deploying. It covers admission-key creation, gateway startup, signed deployment, local runtime provisioning, limits, and the remaining framework-upgrade work.
+Read [SECURITY_OPERATIONS.md](SECURITY_OPERATIONS.md) before deploying. It covers admission-key creation, gateway startup, signed deployment, local runtime provisioning, limits, and the remaining framework-upgrade work. See [RELEASING.md](RELEASING.md) for the tag-driven release, crates.io, and release-environment prerequisites.
 
 ## Verification
 

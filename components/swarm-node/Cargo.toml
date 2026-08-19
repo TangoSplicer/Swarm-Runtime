@@ -25,8 +25,8 @@ libp2p = { version = "0.53.0", default-features = false, features = ["gossipsub"
 axum = { version = "0.6", default-features = false, features = ["http1", "json", "macros", "multipart", "tokio"] }
 
 # Internal Components
-synapse = { path = "../synapse" }
-judge = { path = "../judge" }
+synapse = { version = "1.0.0", path = "../synapse" }
+judge = { version = "1.0.0", path = "../judge" }
 ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
 sysinfo = "0.38.2"
 sha2 = "0.10.9"

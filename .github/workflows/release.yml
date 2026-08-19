@@ -1,0 +1,111 @@
+name: Release and publish
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing vX.Y.Z tag to release"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: Verify, publish, and release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: crates-io-publish
+
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo registry and build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ runner.os }}
+
+      - name: Verify release tag matches workspace version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          version="${tag#v}"
+          test "$tag" != "$version" || { echo "Release tag must start with v"; exit 1; }
+          workspace_version="$(awk -F '"' '/^version = / { print $2; exit }' components/synapse/Cargo.toml)"
+          test "$version" = "$workspace_version" || {
+            echo "Tag $tag does not match workspace package version $workspace_version"
+            exit 1
+          }
+
+      - name: Check formatting, lint, and tests
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+          cargo test --workspace --all-targets --locked
+
+      - name: Package independently publishable crates
+        run: |
+          cargo package --locked --package synapse
+          cargo package --locked --package judge
+          cargo package --locked --package lazarus
+
+      - name: Publish crates to crates.io in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CARGO_REGISTRY_TOKEN" || { echo "CARGO_REGISTRY_TOKEN is required"; exit 1; }
+
+          publish_with_retry() {
+            local package="$1"
+            for attempt in 1 2 3 4 5 6; do
+              if cargo publish --locked --package "$package"; then
+                return 0
+              fi
+              if [ "$attempt" -eq 6 ]; then
+                return 1
+              fi
+              echo "Waiting for crates.io index propagation before retrying $package..."
+              sleep 20
+            done
+          }
+
+          publish_with_retry synapse
+          publish_with_retry judge
+          publish_with_retry lazarus
+          publish_with_retry swarm-cli
+          publish_with_retry swarm-node
+
+      - name: Build release binaries
+        run: cargo build --workspace --release --locked
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: |
+            target/release/swarm-node
+            target/release/swarm-cli
