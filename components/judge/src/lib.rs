@@ -80,7 +80,8 @@ impl Judge {
                 .map_err(|e| anyhow!("Failed to open isolated workspace: {e}"))?;
         let guest_state_path = "/data/state.json";
 
-        let mut builder = WasiCtxBuilder::new()
+        let mut builder = WasiCtxBuilder::new();
+        builder
             .inherit_stdout()
             .inherit_stderr()
             .args(&wasi_args)
@@ -89,7 +90,7 @@ impl Judge {
             .map_err(|e| anyhow!("WASI env error: {e}"))?;
 
         if polyglot_id == "POLYGLOT:PYTHON" {
-            builder = builder
+            builder
                 .env("PYTHONPATH", "/python-wasi.zip")
                 .map_err(|e| anyhow!("WASI environment error: {e}"))?
                 .env("PYTHONHOME", "/")
@@ -103,7 +104,7 @@ impl Judge {
 
         let mut store = Store::new(&self.engine, wasi_ctx);
         store
-            .add_fuel(self.fuel_limit)
+            .set_fuel(self.fuel_limit)
             .map_err(|e| anyhow!("Fuel error: {e}"))?;
 
         let mut linker = self.linker.clone();
@@ -111,9 +112,7 @@ impl Judge {
             .map_err(|e| anyhow!("WASI link error: {e}"))?;
 
         let instance = linker
-            .instantiate(&mut store, &module)
-            .map_err(|e| anyhow!("WASI instantiate error: {e}"))?
-            .start(&mut store)
+            .instantiate_and_start(&mut store, &module)
             .map_err(|e| anyhow!("WASI start error: {e}"))?;
 
         let start_func = instance
@@ -241,5 +240,45 @@ mod tests {
             workspace_state_path(workspace),
             Path::new("/tmp/swarm-workspaces/job-a/data/state.json")
         );
+    }
+
+    #[test]
+    fn stable_runtime_executes_minimal_start_module_in_isolated_workspace() {
+        let workspace = std::env::temp_dir().join(format!(
+            "swarm-judge-runtime-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock must be after the Unix epoch")
+                .as_nanos()
+        ));
+        let mut judge = Judge::new(Some(10_000)).expect("fuel limit must be valid");
+
+        let result = judge.execute(
+            &minimal_start_module(),
+            &["input line".to_string()],
+            "WASM",
+            &workspace,
+        );
+        let app_contents = std::fs::read_to_string(workspace.join("data/app.txt"));
+        let cleanup = std::fs::remove_dir_all(&workspace);
+
+        assert!(result.is_ok(), "minimal module must execute: {result:?}");
+        assert_eq!(result.expect("result checked above").0, 0);
+        assert_eq!(
+            app_contents.expect("input file must be written"),
+            "input line"
+        );
+        assert!(cleanup.is_ok(), "test workspace cleanup must succeed");
+    }
+
+    fn minimal_start_module() -> Vec<u8> {
+        vec![
+            0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // Wasm header
+            0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // () -> () function type
+            0x03, 0x02, 0x01, 0x00, // one function using type zero
+            0x07, 0x0A, 0x01, 0x06, b'_', b's', b't', b'a', b'r', b't', 0x00, 0x00, 0x0A, 0x04,
+            0x01, 0x02, 0x00, 0x0B, // empty function body
+        ]
     }
 }

@@ -79,7 +79,7 @@ cargo test --workspace --all-targets --locked
 cargo audit --file Cargo.lock
 ```
 
-The audit still reports advisory findings in legacy or optional transitive branches owned by the current Axum 0.6, Libp2p 0.53, and Wasmi/WASI 0.31 dependency families. Do not suppress those findings. Schedule coordinated upgrades of those framework families and record reachability and an expiry date for any temporary exception.
+The Judge executor uses the stable Wasmi/WASI 1.1 runtime line and capability filesystem stack 3.4.5. The runtime migration removed the prior `cap-primitives 0.26.1` Windows sandbox advisory from the resolved graph. The audit still reports advisory findings in legacy or optional transitive branches owned by the current Axum 0.6 and Libp2p 0.53 dependency families. Do not suppress those findings. Schedule coordinated upgrades of those framework families and record reachability and an expiry date for any temporary exception.
 
 ## Remaining high-priority work
 
