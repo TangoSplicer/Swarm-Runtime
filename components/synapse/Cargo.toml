@@ -4,7 +4,7 @@ version = "1.0.0"
 edition = "2021"
 
 [dependencies]
-libp2p = { version = "0.53", default-features = false, features = ["macros", "tokio", "tcp", "noise", "yamux", "gossipsub", "kad", "identify", "request-response", "cbor"] }
+libp2p = { version = "0.56", default-features = false, features = ["macros", "tokio", "tcp", "noise", "yamux", "gossipsub", "kad", "identify", "request-response", "cbor"] }
 tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

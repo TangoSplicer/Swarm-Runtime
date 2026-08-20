@@ -68,7 +68,7 @@ The current Judge configuration limits the Wasm module to 25 MiB and dataset, st
 
 ## Dependency posture
 
-The gateway configures Axum with HTTP/1 only and disables broad Libp2p defaults, enabling only the explicit transports and behaviours used by the runtime. Axum documents `http1` and `http2` as separate optional features.[1]
+The gateway configures Axum 0.8 with HTTP/1 only and disables broad Libp2p defaults, enabling only the explicit transports and behaviours used by the runtime. In particular, the Libp2p feature lists must not add `mdns`, `tls`, `quic`, or `websocket`; the deployed transport uses TCP, Noise, and Yamux. Axum exposes `http1` and `http2` as distinct optional features.[1]
 
 Run these checks before accepting dependency changes:
 
@@ -76,10 +76,21 @@ Run these checks before accepting dependency changes:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-targets --locked
-cargo audit --file Cargo.lock
+cargo audit --file Cargo.lock --ignore RUSTSEC-2026-0118 --ignore RUSTSEC-2026-0119
 ```
 
-The Judge executor uses the stable Wasmi/WASI 1.1 runtime line and capability filesystem stack 3.4.5. The runtime migration removed the prior `cap-primitives 0.26.1` Windows sandbox advisory from the resolved graph. The audit still reports advisory findings in legacy or optional transitive branches owned by the current Axum 0.6 and Libp2p 0.53 dependency families. Do not suppress those findings. Schedule coordinated upgrades of those framework families and record reachability and an expiry date for any temporary exception.
+The Judge executor uses the stable Wasmi/WASI 1.1 runtime line and capability filesystem stack 3.4.5. The current Axum 0.8 and Libp2p 0.56 migration removed the prior H2 0.3, Ring 0.16, and Rustls-WebPKI 0.101 advisory branches from the lockfile.
+
+### Approved temporary RustSec exceptions
+
+The security workflow contains exactly two explicitly named RustSec exceptions, both retained by the **inactive** optional `libp2p-mdns 0.48.0 → hickory-proto 0.25.2` branch. Neither `swarm-node` nor `synapse` enables the `mdns` feature, and reverse dependency inspection of the active build has no path to either package.
+
+| Advisory | Reason and compensating control | Review deadline |
+|---|---|---|
+| `RUSTSEC-2026-0118` | Hickory reports no patched 0.25 release. The vulnerable `DnssecDnsHandle` path additionally requires a DNSSEC feature and DNSSEC validation; this project enables neither mDNS nor Hickory DNSSEC. Keep `mdns` absent. | **20 November 2026** |
+| `RUSTSEC-2026-0119` | The fix is Hickory 0.26.1, while the latest Libp2p 0.56 optional mDNS component resolves Hickory 0.25.2. The branch is inactive because `mdns` remains disabled. | **20 November 2026** |
+
+These two identifiers are an exception list, not a general audit suppression policy. Remove both ignores immediately when a compatible Libp2p release no longer retains `hickory-proto 0.25.x`; if `mdns` is ever enabled, remove the exception first and upgrade the stack before deployment.[2] [3]
 
 ## Remaining high-priority work
 
@@ -87,4 +98,6 @@ The result signature key is verified but is not yet cryptographically registered
 
 ## References
 
-[1]: https://docs.rs/axum/0.6.20/axum/#feature-flags "Axum 0.6.20 feature flags"
+[1]: https://docs.rs/axum/0.8.9/axum/#feature-flags "Axum 0.8.9 feature flags"
+[2]: https://rustsec.org/advisories/RUSTSEC-2026-0118 "RUSTSEC-2026-0118"
+[3]: https://rustsec.org/advisories/RUSTSEC-2026-0119 "RUSTSEC-2026-0119"

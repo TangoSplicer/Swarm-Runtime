@@ -325,7 +325,7 @@ pub async fn run_gateway(
                                         }
                                     },
 
-                                    SwarmEvent::Behaviour(SynapseBehaviorEvent::ReqRes(request_response::Event::Message { peer, message })) => {
+                                    SwarmEvent::Behaviour(SynapseBehaviorEvent::ReqRes(request_response::Event::Message { peer, message, .. })) => {
                                         if let request_response::Message::Response { request_id, response } = message {
                                             if let Some(hash) = req_to_hash.remove(&request_id) {
                                                 if let SwarmResponse::DataPayload(bytes) = response {
@@ -529,16 +529,15 @@ pub async fn run_gateway(
     let app = Router::new()
         .route("/", get(dashboard))
         .route("/api/v1/jobs", post(submit_job))
-        .route("/api/v1/jobs/:id", get(get_job_status))
-        .route("/api/v1/data/:hash", get(fetch_data))
+        .route("/api/v1/jobs/{id}", get(get_job_status))
+        .route("/api/v1/data/{hash}", get(fetch_data))
         .layer(axum::extract::DefaultBodyLimit::max(50_000_000))
         .with_state(shared_state);
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     println!("Gateway Active: http://localhost:{}", port);
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service())
-        .await?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
 
     Ok(())
 }

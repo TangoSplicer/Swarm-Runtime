@@ -105,7 +105,7 @@ pub async fn run_worker(
             },
             event = p2p_node.swarm.select_next_some() => {
                 match event {
-                    SwarmEvent::Behaviour(SynapseBehaviorEvent::ReqRes(request_response::Event::Message { peer, message })) => {
+                    SwarmEvent::Behaviour(SynapseBehaviorEvent::ReqRes(request_response::Event::Message { peer, message, .. })) => {
                         if let request_response::Message::Request { request: SwarmRequest::DispatchShard(json_payload), channel, .. } = message {
                             let _ = p2p_node.swarm.behaviour_mut().req_res.send_response(channel, SwarmResponse::Ack);
 

@@ -38,5 +38,15 @@ jobs:
       - name: Install cargo-audit
         uses: taiki-e/install-action@cargo-audit
 
+      - name: Enforce restricted Libp2p feature policy
+        run: |
+          ! grep -RE 'features = .*"(mdns|tls|quic|websocket)"' \
+            components/swarm-node/Cargo.toml components/synapse/Cargo.toml
+
       - name: Scan locked dependencies for RustSec advisories
-        run: cargo audit --file Cargo.lock
+        # The two exceptions are inactive optional mDNS dependencies, documented with
+        # exploit conditions and a review deadline in SECURITY_OPERATIONS.md.
+        run: >-
+          cargo audit --file Cargo.lock
+          --ignore RUSTSEC-2026-0118
+          --ignore RUSTSEC-2026-0119
