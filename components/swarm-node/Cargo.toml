@@ -16,7 +16,6 @@ base64 = "0.21"
 log = "0.4"
 env_logger = "0.10"
 clap = { version = "4.3", features = ["derive"] }
-sled = "0.34"
 
 # Networking (Must match Synapse version)
 libp2p = { version = "0.56", default-features = false, features = ["gossipsub", "macros", "tokio", "tcp", "noise", "yamux", "kad", "identify", "request-response", "cbor"] }
