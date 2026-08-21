@@ -1,0 +1,97 @@
+name: Monthly upstream dependency review
+
+on:
+  schedule:
+    - cron: "0 0 8 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-dependency-review-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review-multicast-dns-exceptions:
+    name: Review Libp2p and Hickory updates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Check upstream release compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          locked_version() {
+            awk -v package_name="$1" '
+              /^\[\[package\]\]$/ { in_package = 0 }
+              $0 == "name = \"" package_name "\"" { in_package = 1; next }
+              in_package && /^version = / {
+                gsub(/version = \"|\"/, "")
+                print
+                exit
+              }
+            ' Cargo.lock
+          }
+
+          crates_api() {
+            curl --fail --silent --show-error --retry 3 --connect-timeout 10 --max-time 30 \
+              --user-agent 'Swarm-Runtime-upstream-review/1.0 (https://github.com/TangoSplicer/Swarm-Runtime)' \
+              "https://crates.io/api/v1/$1"
+          }
+
+          latest_version() {
+            crates_api "crates/$1" | jq --raw-output '.crate.max_version'
+          }
+
+          hickory_requirement() {
+            crates_api "crates/libp2p-mdns/$1/dependencies" | \
+              jq --raw-output '.dependencies[] | select(.crate_id == "hickory-proto") | .req'
+          }
+
+          libp2p_locked="$(locked_version libp2p)"
+          mdns_locked="$(locked_version libp2p-mdns)"
+          hickory_locked="$(locked_version hickory-proto)"
+          libp2p_latest="$(latest_version libp2p)"
+          mdns_latest="$(latest_version libp2p-mdns)"
+          hickory_latest="$(latest_version hickory-proto)"
+          mdns_hickory_requirement="$(hickory_requirement "$mdns_latest")"
+
+          printf '%s\n' '## Monthly upstream dependency review' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' '| Package | Locked | Latest registry release |' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' '|---|---:|---:|' >> "$GITHUB_STEP_SUMMARY"
+          printf '| `libp2p` | `%s` | `%s` |\n' "$libp2p_locked" "$libp2p_latest" >> "$GITHUB_STEP_SUMMARY"
+          printf '| `libp2p-mdns` | `%s` | `%s` |\n' "$mdns_locked" "$mdns_latest" >> "$GITHUB_STEP_SUMMARY"
+          printf '| `hickory-proto` | `%s` | `%s` |\n' "$hickory_locked" "$hickory_latest" >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "The latest `libp2p-mdns` release declares `hickory-proto $mdns_hickory_requirement`." >> "$GITHUB_STEP_SUMMARY"
+
+          review_required=0
+          if [[ "$libp2p_locked" != "$libp2p_latest" ]]; then
+            printf '%s\n' '- A newer `libp2p` release is available; review whether it updates the optional mDNS dependency line.' >> "$GITHUB_STEP_SUMMARY"
+            review_required=1
+          fi
+          if [[ "$mdns_locked" != "$mdns_latest" ]]; then
+            printf '%s\n' '- A newer `libp2p-mdns` release is available; review whether it adopts Hickory 0.26.1 or later.' >> "$GITHUB_STEP_SUMMARY"
+            review_required=1
+          fi
+          if [[ "$mdns_hickory_requirement" != "^0.25.2" ]]; then
+            printf '%s\n' '- The latest `libp2p-mdns` Hickory requirement changed; review whether the two inactive-mDNS audit exceptions can now be removed.' >> "$GITHUB_STEP_SUMMARY"
+            review_required=1
+          fi
+
+          if [[ "$review_required" -ne 0 ]]; then
+            printf '%s\n' >> "$GITHUB_STEP_SUMMARY"
+            printf '%s\n' '> Review required: do not update transitive dependencies with an override. Upgrade Libp2p and Libp2p-mDNS through a compatible upstream release, then remove `RUSTSEC-2026-0118` and `RUSTSEC-2026-0119` if the fixed Hickory line resolves.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'A compatible upstream dependency review is required.' >&2
+            exit 1
+          fi
+
+          printf '%s\n' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'No compatible upstream remediation is available yet. The latest Libp2p mDNS release still requires the Hickory 0.25 line, so the two inactive-mDNS exceptions remain unchanged.' >> "$GITHUB_STEP_SUMMARY"

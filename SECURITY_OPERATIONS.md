@@ -92,6 +92,8 @@ The security workflow contains exactly two explicitly named RustSec exceptions, 
 
 These two identifiers are an exception list, not a general audit suppression policy. Remove both ignores immediately when a compatible Libp2p release no longer retains `hickory-proto 0.25.x`; if `mdns` is ever enabled, remove the exception first and upgrade the stack before deployment.[2] [3]
 
+The `Monthly upstream dependency review` workflow runs at 08:00 UTC on the first day of each month and can also be started manually from GitHub Actions. It compares the locked and current registry versions of `libp2p`, `libp2p-mdns`, and `hickory-proto`, then tests whether `hickory-proto 0.26.1` is compatible with the resolved graph. A failed workflow is an intentional **review signal**, not a deployment failure: inspect the summary, update through a compatible Libp2p release, run the required quality gates, and remove these two exceptions only after the fixed Hickory line resolves.
+
 ## Remaining high-priority work
 
 The result signature key is verified but is not yet cryptographically registered to the Libp2p `PeerId`. Add a worker-registration attestation binding these keys before treating a result signer as a stable worker identity. In addition, pin runtime artifact hashes and add an end-to-end test covering valid admission, replay rejection, invalid worker signatures, state handling, and workspace cleanup.
