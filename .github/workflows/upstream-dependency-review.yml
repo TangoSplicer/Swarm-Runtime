@@ -2,7 +2,7 @@ name: Monthly upstream dependency review
 
 on:
   schedule:
-    - cron: "0 0 8 1 * *"
+    - cron: "0 8 1 * *"
   workflow_dispatch:
 
 permissions:
